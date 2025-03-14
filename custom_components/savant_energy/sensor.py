@@ -4,7 +4,6 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from . import EnergyDeviceSensor
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up Energy Snapshot sensor entities."""
