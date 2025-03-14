@@ -42,6 +42,8 @@ if __name__ == "__main__":
     port = 2000  # Replace with the actual port
     snapshot = get_current_energy_snapshot(address, port)
     if snapshot:
-        print("Energy Snapshot:", snapshot)
+        with open("output.json", "w") as outfile:
+            json.dump(snapshot, outfile, indent=4)
+        print("Energy Snapshot saved to output.json")
     else:
         print("Failed to retrieve energy snapshot.")
