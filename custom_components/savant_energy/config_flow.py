@@ -35,7 +35,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_ADDRESS): str,
-                    vol.Required(CONF_PORT): int,
+                    vol.Required(CONF_PORT, default=2000): int,  # Set default port here
                 }
             ),
             errors=errors,
