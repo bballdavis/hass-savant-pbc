@@ -1,0 +1,11 @@
+{
+    "domain": "savant_energy",
+    "name": "Savant Energy",
+    "version": "0.1.0",
+    "documentation": "https://github.com/bballdavis/hass-savant-pbc",
+    "requirements": [],
+    "codeowners": ["@bballdavis"],
+    "config_flow": true,
+    "iot_class": "local_polling",
+    "issue_tracker": "https://github.com/bballdavis/hass-savant-pbc/issues"
+  }
