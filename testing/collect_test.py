@@ -8,7 +8,17 @@ def get_current_energy_snapshot(address, port):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((address, port))
-            data = s.recv(100000)
+            #data = s.recv(100000)
+            data = b""
+            equals_count = 0
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                equals_count += chunk.count(b'=')
+                if equals_count >= 2:
+                    break
 
         if not data:
             return None
@@ -20,6 +30,15 @@ def get_current_energy_snapshot(address, port):
 
         if data_str.startswith("SET_ENERGY="):
             data_str = data_str[len("SET_ENERGY="):]
+
+        # Strip/delete everything after the second '=' (including the '=')
+        equals_count = 0
+        for i, char in enumerate(data_str):
+            if char == '=':
+                equals_count += 1
+                if equals_count == 2:
+                    data_str = data_str[:i]
+                    break
 
         try:
             decoded_string = base64.b64decode(data_str).decode('utf-8')
