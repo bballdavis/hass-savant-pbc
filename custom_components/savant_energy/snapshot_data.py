@@ -11,7 +11,7 @@ def get_current_energy_snapshot(address, port):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((address, port))
-            data = s.recv(4096)
+            data = s.recv(20000)
 
         if not data:
             return None
