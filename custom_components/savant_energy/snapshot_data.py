@@ -17,10 +17,10 @@ def get_current_energy_snapshot(address, port):
             _LOGGER.error("No data received")
             return None
 
-        _LOGGER.debug(f"Data received: {data[:100]}... (length: {len(data)})")
+        _LOGGER.error(f"Data received: {data[:100]}... (length: {len(data)})")
 
         data_str = data.decode('utf-8')
-        _LOGGER.debug(f"Data string: {data_str[:100]}... (length: {len(data_str)})")
+        _LOGGER.error(f"Data string: {data_str[:100]}... (length: {len(data_str)})")
 
         if "\n" in data_str:
             data_str = data_str.split("\n", 1)[1]
@@ -28,11 +28,11 @@ def get_current_energy_snapshot(address, port):
         if data_str.startswith("SET_ENERGY="):
             data_str = data_str[len("SET_ENERGY="):]
 
-        _LOGGER.debug(f"Processed data string: {data_str[:100]}... (length: {len(data_str)})")
+        _LOGGER.error(f"Processed data string: {data_str[:100]}... (length: {len(data_str)})")
 
         try:
             decoded_string = base64.b64decode(data_str).decode('utf-8')
-            _LOGGER.debug(f"Decoded string: {decoded_string[:100]}... (length: {len(decoded_string)})")
+            _LOGGER.error(f"Decoded string: {decoded_string[:100]}... (length: {len(decoded_string)})")
         except (base64.binascii.Error) as e:
             _LOGGER.error(f"Decode Error: {e}, Data Length: {len(data_str)}")
             return None
