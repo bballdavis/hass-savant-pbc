@@ -33,7 +33,7 @@ def get_current_energy_snapshot(address, port):
             json_data = json.loads(decoded_string)
             return json_data
         except (json.JSONDecodeError) as e:
-            _LOGGER.error(f"JSON Error: {e}, Data Length: {len(data_str)}")
+            _LOGGER.error(f"JSON Error: {e}, JSON: {decoded_string}")
             return None
 
     except socket.error as e:
