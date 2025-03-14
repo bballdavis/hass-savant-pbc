@@ -26,9 +26,13 @@ def get_current_energy_snapshot(address, port):
 
         try:
             decoded_string = base64.b64decode(data_str).decode('utf-8')
+        except (base64.binascii.Error) as e:
+            _LOGGER.error(f"Decode/JSON Error: {e}, Data Length: {len(data_str)}")
+            return None
+        try:
             json_data = json.loads(decoded_string)
             return json_data
-        except (base64.binascii.Error, json.JSONDecodeError) as e:
+        except (json.JSONDecodeError) as e:
             _LOGGER.error(f"Decode/JSON Error: {e}, Data Length: {len(data_str)}")
             return None
 
