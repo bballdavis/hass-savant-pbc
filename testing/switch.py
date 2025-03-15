@@ -8,7 +8,7 @@ import logging
 
 _LOGGER = logging.getLogger(__name__)
 
-from .const import DOMAIN
+from ..custom_components.savant_energy.const import DOMAIN
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):

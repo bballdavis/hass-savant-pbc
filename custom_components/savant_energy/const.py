@@ -1,5 +1,5 @@
 DOMAIN = "savant_energy"
-PLATFORMS = ["sensor", "switch"]
+PLATFORMS = ["sensor"]
 
 CONF_ADDRESS = "address"
 CONF_PORT = "port"
