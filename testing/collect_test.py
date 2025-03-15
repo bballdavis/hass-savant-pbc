@@ -1,23 +1,20 @@
 import socket
 import base64
 import json
-import logging
 
 def get_current_energy_snapshot(address, port):
     """Retrieves the current energy snapshot."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((address, port))
-            #data = s.recv(100000)
             data = b""
-            equals_count = 0
+            set_energy_found = False
             while True:
                 chunk = s.recv(4096)
                 if not chunk:
                     break
                 data += chunk
-                equals_count += chunk.count(b'=')
-                if equals_count >= 2:
+                if data.count(b'\n') >= 2:
                     break
 
         if not data:
@@ -25,20 +22,13 @@ def get_current_energy_snapshot(address, port):
 
         data_str = data.decode('utf-8')
 
+        # Extract the value of SET_ENERGY
+        if "SET_ENERGY=" in data_str:
+            data_str = data_str.split("SET_ENERGY=", 1)[1]
+
+        # Strip off everything after the newline that follows SET_ENERGY
         if "\n" in data_str:
-            data_str = data_str.split("\n", 1)[1]
-
-        if data_str.startswith("SET_ENERGY="):
-            data_str = data_str[len("SET_ENERGY="):]
-
-        # Strip/delete everything after the second '=' (including the '=')
-        equals_count = 0
-        for i, char in enumerate(data_str):
-            if char == '=':
-                equals_count += 1
-                if equals_count == 2:
-                    data_str = data_str[:i]
-                    break
+            data_str = data_str.split("\n", 1)[0]
 
         try:
             decoded_string = base64.b64decode(data_str).decode('utf-8')
