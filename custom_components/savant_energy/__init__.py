@@ -1,4 +1,5 @@
 """Energy Snapshot Integration."""
+
 import asyncio
 import logging
 from datetime import timedelta
@@ -22,18 +23,21 @@ CONFIG_SCHEMA = vol.Schema(
             {
                 vol.Required(CONF_ADDRESS): cv.string,
                 vol.Required(CONF_PORT): cv.port,
-                vol.Optional(CONF_SCAN_INTERVAL, default=15): cv.positive_int,
+                vol.Optional(CONF_SCAN_INTERVAL, default=60): cv.positive_int,
             }
         )
     },
     extra=vol.ALLOW_EXTRA,
 )
 
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Energy Snapshot from a config entry."""
     address = entry.data[CONF_ADDRESS]
     port = entry.data[CONF_PORT]
-    scan_interval = entry.options.get(CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, 15))
+    scan_interval = entry.options.get(
+        CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, 60)
+    )
 
     async def async_update_data():
         """Fetch data from API endpoint."""
@@ -59,12 +63,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     return True
 
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_forward_entry_unload(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
     return unload_ok
+
 
 async def async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update."""
