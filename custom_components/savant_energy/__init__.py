@@ -10,7 +10,6 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.const import CONF_ICON
 
 from .const import DOMAIN, PLATFORMS, CONF_ADDRESS, CONF_PORT, CONF_SCAN_INTERVAL
 from .snapshot_data import get_current_energy_snapshot
@@ -23,7 +22,7 @@ CONFIG_SCHEMA = vol.Schema(
             {
                 vol.Required(CONF_ADDRESS): cv.string,
                 vol.Required(CONF_PORT): cv.port,
-                vol.Optional(CONF_SCAN_INTERVAL, default=60): cv.positive_int,
+                vol.Optional(CONF_SCAN_INTERVAL, default=15): cv.positive_int,
             }
         )
     },
@@ -36,7 +35,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     address = entry.data[CONF_ADDRESS]
     port = entry.data[CONF_PORT]
     scan_interval = entry.options.get(
-        CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, 60)
+        CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, 15)
     )
 
     async def async_update_data():
@@ -50,7 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER,
         name=DOMAIN,
         update_method=async_update_data,
-        update_interval=timedelta(seconds=scan_interval),
+        update_interval=timedelta(seconds=scan_interval),  # Corrected line
     )
 
     await coordinator.async_config_entry_first_refresh()

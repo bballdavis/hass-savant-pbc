@@ -1,5 +1,6 @@
 # custom_components/energy_snapshot/config_flow.py
 """Config flow for Energy Snapshot integration."""
+
 import logging
 
 import voluptuous as vol
@@ -10,6 +11,7 @@ from homeassistant.core import callback
 from .const import DOMAIN, CONF_ADDRESS, CONF_PORT, CONF_SCAN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
+
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Energy Snapshot."""
@@ -55,6 +57,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Get the options flow for this handler."""
         return OptionsFlowHandler(config_entry)
 
+
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle a option flow for Energy Snapshot."""
 
@@ -65,13 +68,21 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         """Handle options flow."""
         if user_input is not None:
-            return self.async_create_entry(title="Savant Energy Options", data=user_input)
+            return self.async_create_entry(
+                title="Savant Energy Options", data=user_input
+            )
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(CONF_SCAN_INTERVAL, default=self.config_entry.options.get(CONF_SCAN_INTERVAL, self.config_entry.data.get(CONF_SCAN_INTERVAL, 15))): int,
+                    vol.Optional(
+                        CONF_SCAN_INTERVAL,
+                        default=self.config_entry.options.get(
+                            CONF_SCAN_INTERVAL,
+                            self.config_entry.data.get(CONF_SCAN_INTERVAL, 15),
+                        ),
+                    ): int,
                 }
-            )
+            ),
         )

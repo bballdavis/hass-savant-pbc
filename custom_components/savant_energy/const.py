@@ -1,5 +1,7 @@
+"""Constants for the Energy Snapshot integration."""
+
 DOMAIN = "savant_energy"
-PLATFORMS = ["sensor"]
+PLATFORMS = ["sensor", "switch"]
 
 CONF_ADDRESS = "address"
 CONF_PORT = "port"
