@@ -1,5 +1,5 @@
 # custom_components/energy_snapshot/config_flow.py
-"""Config flow for Energy Snapshot integration."""
+"""Config flow for Savant Energy integration."""
 
 import logging
 
@@ -8,13 +8,20 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 
-from .const import DOMAIN, CONF_ADDRESS, CONF_PORT, CONF_SCAN_INTERVAL
+from .const import (
+    DOMAIN,
+    CONF_ADDRESS,
+    CONF_PORT,
+    CONF_SCAN_INTERVAL,
+    CONF_SWITCH_COOLDOWN,
+    DEFAULT_SWITCH_COOLDOWN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Energy Snapshot."""
+    """Handle a config flow for Savant Energy."""
 
     VERSION = 1
 
@@ -59,7 +66,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle a option flow for Energy Snapshot."""
+    """Handle a option flow for Savant Energy."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry):
         """Initialize options flow."""
@@ -81,6 +88,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         default=self.config_entry.options.get(
                             CONF_SCAN_INTERVAL,
                             self.config_entry.data.get(CONF_SCAN_INTERVAL, 15),
+                        ),
+                    ): int,
+                    vol.Optional(
+                        CONF_SWITCH_COOLDOWN,
+                        default=self.config_entry.options.get(
+                            CONF_SWITCH_COOLDOWN,
+                            self.config_entry.data.get(
+                                CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN
+                            ),
                         ),
                     ): int,
                 }
