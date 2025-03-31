@@ -1,6 +1,10 @@
 """Binary sensor platform for Energy Snapshot integration."""
 
 import logging
+from datetime import datetime, timedelta
+import aiohttp
+import asyncio
+from typing import Final
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.helpers.entity import DeviceInfo
@@ -10,6 +14,12 @@ from .const import DOMAIN
 from .sensor import calculate_dmx_uid, get_device_model
 
 _LOGGER = logging.getLogger(__name__)
+
+# DMX API constants
+DMX_PORT: Final = 9090
+DMX_ON_VALUE: Final = 255
+DMX_OFF_VALUE: Final = 0
+DMX_CACHE_SECONDS: Final = 30
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -43,6 +53,9 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
         self._device = device
         self._attr_name = f"{device['name']} Relay Status"
         self._attr_unique_id = unique_id
+        self._dmx_uid = dmx_uid
+        self._dmx_status = None
+        self._dmx_last_update = None
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, str(device["uid"]))},
             name=device["name"],
@@ -51,9 +64,63 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
             model=get_device_model(device.get("capacity", 0)),  # Determine model
         )
 
+    async def async_update(self) -> None:
+        """Update the entity."""
+        await super().async_update()
+        # Try to fetch the DMX status
+        await self._update_dmx_status()
+
+    async def _update_dmx_status(self) -> None:
+        """Update the DMX status via HTTP request."""
+        # Check if we need to update the cached value
+        now = datetime.now()
+        if self._dmx_last_update is None or now - self._dmx_last_update > timedelta(
+            seconds=DMX_CACHE_SECONDS
+        ):
+            # Get IP address from config entry
+            ip_address = self.coordinator.config_entry.data.get("address")
+            if not ip_address:
+                _LOGGER.debug("No IP address available for DMX request")
+                return
+
+            url = f"http://{ip_address}:{DMX_PORT}/get_dmx?u={self._dmx_uid}"
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=10) as response:
+                        if response.status == 200:
+                            data = await response.text()
+                            try:
+                                value = int(data.strip())
+                                self._dmx_status = value == DMX_ON_VALUE
+                                self._dmx_last_update = now
+                                _LOGGER.debug(
+                                    "DMX status for %s: %s",
+                                    self._dmx_uid,
+                                    self._dmx_status,
+                                )
+                            except ValueError:
+                                _LOGGER.debug("Invalid DMX response format: %s", data)
+                        else:
+                            _LOGGER.debug(
+                                "DMX request failed with status %s", response.status
+                            )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                _LOGGER.debug("Error making DMX request: %s", err)
+            except Exception as err:
+                _LOGGER.debug("Unexpected error in DMX request: %s", err)
+
     @property
     def is_on(self) -> bool | None:
         """Return true if the relay status is on."""
+        # First try to use DMX status if available and recent
+        if self._dmx_status is not None and self._dmx_last_update is not None:
+            if datetime.now() - self._dmx_last_update <= timedelta(
+                seconds=DMX_CACHE_SECONDS
+            ):
+                return self._dmx_status
+
+        # Fall back to the existing method using coordinator data
         if self.coordinator.data and "presentDemands" in self.coordinator.data:
             for device in self.coordinator.data["presentDemands"]:
                 if device["uid"] == self._device["uid"]:
@@ -66,10 +133,20 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def available(self) -> bool:
         """Return True if the entity is available."""
-        return (
+        # We're available if we have recent DMX data OR coordinator data
+        has_dmx_data = (
+            self._dmx_status is not None
+            and self._dmx_last_update is not None
+            and datetime.now() - self._dmx_last_update
+            <= timedelta(seconds=DMX_CACHE_SECONDS * 2)
+        )
+
+        has_coordinator_data = (
             self.coordinator.data is not None
             and "presentDemands" in self.coordinator.data
         )
+
+        return has_dmx_data or has_coordinator_data
 
     @property
     def icon(self) -> str:
