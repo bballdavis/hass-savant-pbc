@@ -7,12 +7,8 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
-from .utility_meter_sensor import (
-    UtilityMeterSensor,
-    RESET_DAILY,  # Add RESET_DAILY
-    RESET_MONTHLY,
-    RESET_YEARLY,
-)
+from .models import get_device_model
+from .utility_meter_sensor import EnhancedUtilityMeterSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -100,7 +96,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     async_add_entities(entities)
     _LOGGER.debug("Added %d sensor entities", len(entities))
 
-    # After entities are added, create utility meter sensors using the actual entity_ids
+    # Create enhanced utility meter sensors
     utility_meter_sensors = []
 
     for power_sensor in power_sensors:
@@ -117,63 +113,25 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         device_info = power_sensor._attr_device_info
 
         _LOGGER.debug(
-            "Creating utility meters for %s with source entity: %s",
+            "Creating enhanced utility meter for %s with source entity: %s",
             device_name,
             power_sensor.entity_id,
         )
 
-        # Daily meter (replacing hourly meter)
+        # Create a single enhanced utility meter that tracks all periods
         utility_meter_sensors.append(
-            UtilityMeterSensor(
+            EnhancedUtilityMeterSensor(
                 hass,
                 power_sensor.entity_id,
-                f"{device_name} Energy - Day",
-                f"SavantEnergy_{uid}_daily_energy",
+                "Energy",  # Use a short label to avoid duplicated device name
+                f"SavantEnergy_{uid}_energy",
                 device_info,
-                RESET_DAILY,
-            )
-        )
-
-        # Monthly meter
-        utility_meter_sensors.append(
-            UtilityMeterSensor(
-                hass,
-                power_sensor.entity_id,
-                f"{device_name} Energy - Month",
-                f"SavantEnergy_{uid}_monthly_energy",
-                device_info,
-                RESET_MONTHLY,
-            )
-        )
-
-        # Yearly meter
-        utility_meter_sensors.append(
-            UtilityMeterSensor(
-                hass,
-                power_sensor.entity_id,
-                f"{device_name} Energy - YTD",
-                f"SavantEnergy_{uid}_yearly_energy",
-                device_info,
-                RESET_YEARLY,
             )
         )
 
     if utility_meter_sensors:
         async_add_entities(utility_meter_sensors)
         _LOGGER.debug("Added %d utility meter sensors", len(utility_meter_sensors))
-
-
-def get_device_model(capacity: float) -> str:
-    """Determine the device model based on capacity."""
-    match capacity:
-        case 2.4:
-            return "Dual 20A Relay"
-        case 7.2:
-            return "30A Relay"
-        case 14.4:
-            return "60A Relay"
-        case _:
-            return "Unknown Model"
 
 
 class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
@@ -196,7 +154,6 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
         self._attr_native_unit_of_measurement = self._get_unit_of_measurement(
             sensor_type
         )
-        self._attr_state_class = "measurement"  # Adjust as needed
         self._dmx_uid = dmx_uid  # Ensure DMX UID is stored
         self._channel = device.get("channel")  # Add channel information
 
@@ -206,11 +163,24 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
             case "voltage":
                 return "V"
             case "power":
-                return "W"
+                return "W"  # This is correct - power should be in W
             case "channel":
                 return None
             case _:
                 return None
+
+    @property
+    def state_class(self) -> str | None:
+        """Return the state class of the sensor."""
+        match self._sensor_type:
+            case "power":
+                return "measurement"  # Power is a measurement
+            case "voltage":
+                return "measurement"
+            case "channel":
+                return None
+            case _:
+                return "measurement"
 
     @property
     def native_value(self) -> int | None:
@@ -233,7 +203,7 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
             case "voltage":
                 return "mdi:lightning-bolt-outline"
             case "power":
-                return "mdi:meter-electric-outline"
+                return "mdi:gauge"
             case "channel":
                 return "mdi:tune-variant"
             case _:

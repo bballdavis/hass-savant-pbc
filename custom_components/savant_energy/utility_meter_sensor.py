@@ -1,179 +1,309 @@
-"""Switch platform for Savant Energy."""
+"""Utility meter sensor implementation for Savant Energy."""
 
 import logging
-import time
-import math
+from datetime import datetime, timedelta
+from typing import Any, Dict
 
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.entity import DeviceInfo, Entity
+from homeassistant.helpers.event import async_track_point_in_time
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN, MANUFACTURER
-from .sensor import get_device_model  # Import the model lookup function
+from .const import DOMAIN, MANUFACTURER
 
 _LOGGER = logging.getLogger(__name__)
 
-_last_command_time = 0.0
+# Constants for reset periods
+RESET_DAILY = "daily"
+RESET_MONTHLY = "monthly"
+RESET_YEARLY = "yearly"
 
 
-async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
-    """Set up Savant Energy switch entities."""
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]
+class EnhancedUtilityMeterSensor(RestoreEntity):
+    """Energy meter sensor with daily, monthly, and yearly usage (primary) attributes."""
 
-    # Get cooldown setting from config
-    cooldown = config_entry.options.get(
-        CONF_SWITCH_COOLDOWN,
-        config_entry.data.get(CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN),
-    )
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_has_entity_name = True
 
-    entities = []
-    if (
-        coordinator.data
-        and isinstance(coordinator.data, dict)
-        and "presentDemands" in coordinator.data
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        source_entity: str,
+        name: str,
+        unique_id: str,
+        device_info: DeviceInfo,
     ):
-        for device in coordinator.data["presentDemands"]:
-            entities.append(EnergyDeviceSwitch(hass, coordinator, device, cooldown))
+        """Initialize the utility meter sensor."""
+        self.hass = hass
+        self._source_entity = source_entity
+        self._attr_name = name
+        self._attr_unique_id = unique_id
+        self._attr_device_info = device_info
 
-    async_add_entities(entities)
+        # Initialize all counters to zero
+        self._yearly_usage = 0.0
+        self._attr_native_value = 0.0  # Explicitly set native_value
+        self._daily_usage = 0.0
+        self._monthly_usage = 0.0
 
+        self._last_reset = dt_util.utcnow()
+        self._last_power = None
+        self._last_update = None
 
-class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
-    """Representation of a Savant Energy Switch."""
+        # Register state listeners
+        self._remove_listeners = []
 
-    def __init__(self, hass: HomeAssistant, coordinator, device, cooldown: int):
-        """Initialize the switch."""
-        super().__init__(coordinator)
-        self._hass = hass
-        self._device = device
-        self._cooldown = cooldown
-        self._attr_name = f"{device['name']} Switch"
-        self._attr_unique_id = f"{DOMAIN}_{device['uid']}_switch"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, str(device["uid"]))},
-            name=device["name"],
-            manufacturer=MANUFACTURER,
-            model=get_device_model(
-                device.get("capacity", 0)
-            ),  # Use the model lookup function
+    async def async_added_to_hass(self):
+        """Handle entity which will be added."""
+        _LOGGER.debug("Setting up energy meter %s", self.name)
+        await super().async_added_to_hass()
+
+        # Restore previous state if available
+        last_state = await self.async_get_last_state()
+        if last_state is not None:
+            # Restore the main yearly usage from the state value
+            try:
+                self._yearly_usage = (
+                    float(last_state.state)
+                    if last_state.state not in (None, "unknown", "unavailable")
+                    else 0.0
+                )
+                self._attr_native_value = (
+                    self._yearly_usage
+                )  # Set native_value directly
+            except (ValueError, TypeError):
+                self._yearly_usage = 0.0
+                self._attr_native_value = 0.0
+
+            # Restore attributes if available
+            if "daily_usage_kwh" in last_state.attributes:
+                try:
+                    self._daily_usage = float(last_state.attributes["daily_usage_kwh"])
+                except (ValueError, TypeError):
+                    self._daily_usage = 0.0
+            elif "daily_usage" in last_state.attributes:
+                try:
+                    self._daily_usage = float(last_state.attributes["daily_usage"])
+                except (ValueError, TypeError):
+                    self._daily_usage = 0.0
+
+            if "monthly_usage_kwh" in last_state.attributes:
+                try:
+                    self._monthly_usage = float(
+                        last_state.attributes["monthly_usage_kwh"]
+                    )
+                except (ValueError, TypeError):
+                    self._monthly_usage = 0.0
+            elif "monthly_usage" in last_state.attributes:
+                try:
+                    self._monthly_usage = float(last_state.attributes["monthly_usage"])
+                except (ValueError, TypeError):
+                    self._monthly_usage = 0.0
+
+            if "last_reset" in last_state.attributes:
+                try:
+                    self._last_reset = dt_util.parse_datetime(
+                        last_state.attributes["last_reset"]
+                    )
+                except (ValueError, TypeError):
+                    self._last_reset = dt_util.utcnow()
+
+        current_state = self.hass.states.get(self._source_entity)
+        if not last_state and (
+            current_state is None or current_state.state in ("unknown", "unavailable")
+        ):
+            # If there's no previous sensor state and source entity is unknown,
+            # explicitly set the yearly usage to avoid "unknown" display
+            self._yearly_usage = 0.0
+            self._attr_native_value = 0.0  # Set native_value directly
+            self.async_write_ha_state()
+
+        # Track the source entity
+        @callback
+        def async_source_state_changed(entity_id, old_state, new_state):
+            """Handle power changes."""
+            if not new_state or new_state.state in (None, "unknown", "unavailable"):
+                return
+
+            # Parse the power values
+            try:
+                if not old_state or old_state.state in (None, "unknown", "unavailable"):
+                    old_power = 0
+                else:
+                    old_power = float(old_state.state)
+                new_power = float(new_state.state)
+            except (ValueError, TypeError):
+                _LOGGER.warning("Could not parse power values for %s", self.name)
+                return
+
+            # Calculate energy
+            if self._last_update is not None:
+                now = dt_util.utcnow()
+                time_diff = (now - self._last_update).total_seconds() / 3600
+                avg_power = (old_power + new_power) / 2
+                energy_kwh = avg_power * time_diff / 1000
+                _LOGGER.debug(
+                    "%s: Power avg=%.1f W × %.4f h = %.5f kWh",
+                    self.name,
+                    avg_power,
+                    time_diff,
+                    energy_kwh,
+                )
+
+                self._yearly_usage += energy_kwh
+                self._daily_usage += energy_kwh
+                self._monthly_usage += energy_kwh
+                self._attr_native_value = round(
+                    self._yearly_usage, 1
+                )  # Changed from 3 to 1
+                self.async_write_ha_state()
+
+            self._last_power = new_power
+            self._last_update = dt_util.utcnow()
+
+        # Track time for resetting periods
+        @callback
+        def async_reset_daily(now):
+            """Reset daily usage at midnight."""
+            _LOGGER.debug("Resetting daily energy usage for %s", self.name)
+            self._daily_usage = 0.0
+            self.async_write_ha_state()
+
+            # Schedule next reset at midnight
+            next_midnight = dt_util.start_of_local_day(
+                dt_util.now() + timedelta(days=1)
+            )
+            self._remove_listeners.append(
+                async_track_point_in_time(self.hass, async_reset_daily, next_midnight)
+            )
+
+        @callback
+        def async_reset_monthly(now):
+            """Reset monthly usage at the first day of month."""
+            _LOGGER.debug("Resetting monthly energy usage for %s", self.name)
+            self._monthly_usage = 0.0
+            self.async_write_ha_state()
+
+            # Schedule next reset for the first day of next month
+            today = dt_util.now().replace(day=1)
+            next_month = (
+                today.replace(month=today.month + 1)
+                if today.month < 12
+                else today.replace(year=today.year + 1, month=1)
+            )
+            next_reset = dt_util.start_of_local_day(next_month)
+            self._remove_listeners.append(
+                async_track_point_in_time(self.hass, async_reset_monthly, next_reset)
+            )
+
+        @callback
+        def async_reset_yearly(now):
+            """Reset the yearly usage at the beginning of the year."""
+            _LOGGER.debug("Resetting yearly energy usage for %s", self.name)
+            self._yearly_usage = 0.0
+            self._attr_native_value = 0.0  # Reset native_value directly
+            self._daily_usage = 0.0
+            self._monthly_usage = 0.0
+            self._last_reset = dt_util.utcnow()
+            self.async_write_ha_state()
+
+            # Schedule next reset for January 1st of next year
+            today = dt_util.now()
+            next_year = today.replace(year=today.year + 1, month=1, day=1)
+            next_reset = dt_util.start_of_local_day(next_year)
+
+            self._remove_listeners.append(
+                async_track_point_in_time(self.hass, async_reset_yearly, next_reset)
+            )
+
+        # Set up entity state tracking
+        self._remove_listeners.append(
+            self.hass.helpers.event.async_track_state_change(
+                self._source_entity, async_source_state_changed
+            )
         )
-        self._attr_is_on = self._get_percent_commanded_state()
-        self._last_commanded_state = self._attr_is_on
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self._handle_coordinator_update)
+
+        # Schedule initial resets
+        now = dt_util.now()
+        # Next daily reset (midnight)
+        next_midnight = dt_util.start_of_local_day(now + timedelta(days=1))
+        self._remove_listeners.append(
+            async_track_point_in_time(self.hass, async_reset_daily, next_midnight)
+        )
+        # Next monthly reset (1st of month)
+        next_month = (
+            now.replace(day=1, month=now.month + 1)
+            if now.month < 12
+            else now.replace(year=now.year + 1, month=1, day=1)
+        )
+        next_month_reset = dt_util.start_of_local_day(next_month)
+        self._remove_listeners.append(
+            async_track_point_in_time(self.hass, async_reset_monthly, next_month_reset)
+        )
+        # Next yearly reset (January 1st)
+        next_year = now.replace(year=now.year + 1, month=1, day=1)
+        next_year_reset = dt_util.start_of_local_day(next_year)
+        self._remove_listeners.append(
+            async_track_point_in_time(self.hass, async_reset_yearly, next_year_reset)
         )
 
-    def _get_percent_commanded_state(self) -> bool:
-        """Get the state of the switch based on percentCommanded."""
-        if self.coordinator.data and "presentDemands" in self.coordinator.data:
-            for device in self.coordinator.data["presentDemands"]:
-                if device["uid"] == self._device["uid"]:
-                    return device.get("percentCommanded", 0) == 100
-        return False
+        # Initialize with current state
+        current_state = self.hass.states.get(self._source_entity)
+        if current_state is not None:
+            async_source_state_changed(self._source_entity, None, current_state)
+
+        # Make sure we write the current state to avoid "unknown" display
+        self._attr_native_value = round(
+            self._yearly_usage,
+            1,  # Changed from 3 to 1
+        )  # Set explicitly before writing
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self):
+        """Handle entity removal."""
+        # Remove listeners
+        for remove_listener in self._remove_listeners:
+            remove_listener()
+        self._remove_listeners = []
 
     @property
-    def is_on(self) -> bool:
-        """Return the state of the switch."""
-        return self._attr_is_on
+    def native_value(self) -> float:
+        """Return the yearly energy usage in kWh."""
+        return round(self._yearly_usage or 0.0, 1)  # Changed from 3 to 1
 
-    async def async_turn_on(self, **kwargs):
-        """Turn the switch on."""
-        global _last_command_time
-        now = time.monotonic()
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return entity specific state attributes."""
+        # Follow standard Home Assistant attribute naming (no _kwh suffix)
+        return {
+            "daily_usage": round(self._daily_usage, 1),  # Changed from 3 to 1
+            "monthly_usage": round(self._monthly_usage, 1),  # Changed from 3 to 1
+            "yearly_usage": round(self._yearly_usage, 1),  # Changed from 3 to 1
+            "last_reset": self._last_reset.isoformat(),
+        }
 
-        # Check cooldown
-        if now - _last_command_time < self._cooldown:
-            time_left = math.ceil(self._cooldown - (now - _last_command_time))
-            _LOGGER.debug("Cooldown active, ignoring turn_on command")
-
-            # Use persistent_notification.create service which is always available
-            await self._hass.services.async_call(
-                "persistent_notification",
-                "create",
-                {
-                    "message": f"Action for {self._device['name']} was delayed. Please wait {time_left} seconds before trying again.",
-                    "title": "Switch Action Delayed",
-                    "notification_id": f"{DOMAIN}_cooldown_{self._device['uid']}",
-                },
-            )
-            return
-
-        if not self.is_on:
-            _last_command_time = now  # Set cooldown timer only when actually proceeding
-
-            channel_values = []
-            for dev in self.coordinator.data["presentDemands"]:
-                if dev["uid"] == self._device["uid"]:
-                    channel_values.append("255")
-                else:
-                    channel_values.append(
-                        "255" if dev.get("percentCommanded", 255) == 100 else "0"
-                    )
-
-            formatted_string = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://192.168.1.108:9090/set_dmx'
-            _LOGGER.debug("Formatted string: %s", formatted_string)
-
-            # Add the actual API call to turn the switch on
-            self._attr_is_on = True
-            self._last_commanded_state = True
-            self.async_write_ha_state()
-
-    async def async_turn_off(self, **kwargs):
-        """Turn the switch off."""
-        global _last_command_time
-        now = time.monotonic()
-
-        # Check cooldown
-        if now - _last_command_time < self._cooldown:
-            time_left = math.ceil(self._cooldown - (now - _last_command_time))
-            _LOGGER.debug("Cooldown active, ignoring turn_off command")
-
-            # Use persistent_notification.create service which is always available
-            await self._hass.services.async_call(
-                "persistent_notification",
-                "create",
-                {
-                    "message": f"Action for {self._device['name']} was delayed. Please wait {time_left} seconds before trying again.",
-                    "title": "Switch Action Delayed",
-                    "notification_id": f"{DOMAIN}_cooldown_{self._device['uid']}",
-                },
-            )
-            return
-
-        if self.is_on:
-            _last_command_time = now  # Set cooldown timer only when actually proceeding
-
-            channel_values = []
-            for dev in self.coordinator.data["presentDemands"]:
-                if dev["uid"] == self._device["uid"]:
-                    channel_values.append("0")
-                else:
-                    channel_values.append(
-                        "255" if dev.get("percentCommanded", 255) == 100 else "0"
-                    )
-
-            formatted_string = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://192.168.1.108:9090/set_dmx'
-            _LOGGER.debug("Formatted string: %s", formatted_string)
-
-            # Add the actual API call to turn the switch off
-            self._attr_is_on = False
-            self._last_commanded_state = False
-            self.async_write_ha_state()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        new_state = self._get_percent_commanded_state()
-        if new_state != self._last_commanded_state:
-            self._attr_is_on = new_state
-            self._last_commanded_state = new_state
-            self.async_write_ha_state()
+    @property
+    def state(self):
+        """Return the state of the entity."""
+        return round(self._yearly_usage, 1)  # Changed from 3 to 1
 
     @property
     def available(self) -> bool:
-        """Return True if the entity is available."""
-        return (
-            self.coordinator.data is not None
-            and "presentDemands" in self.coordinator.data
-        )
+        """Return True if the sensor is available."""
+        # Always return True to make sure the sensor shows up
+        return True
+
+    @property
+    def icon(self) -> str:
+        """Return the icon for the utility meter sensor."""
+        return "mdi:meter-electric-outline"
+
+    @property
+    def unit_of_measurement(self) -> str:
+        """Return the unit of measurement."""
+        return UnitOfEnergy.KILO_WATT_HOUR

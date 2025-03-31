@@ -10,7 +10,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN, MANUFACTURER
-from .sensor import get_device_model  # Import the model lookup function
+from .models import get_device_model  # Import from models.py instead of sensor.py
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -165,10 +165,29 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         new_state = self._get_percent_commanded_state()
+
+        # Only process state changes
         if new_state != self._last_commanded_state:
-            self._attr_is_on = new_state
-            self._last_commanded_state = new_state
-            self.async_write_ha_state()
+            # Check if cooldown is active
+            now = time.monotonic()
+            if now - _last_command_time < self._cooldown:
+                # Cooldown active, reject the state change
+                time_left = math.ceil(self._cooldown - (now - _last_command_time))
+                _LOGGER.debug(
+                    "Cooldown active, rejecting state change from coordinator for %s. %d seconds left",
+                    self._device["name"],
+                    time_left,
+                )
+
+                # Keep our current state instead of accepting the change
+                # This will effectively reject the state change
+                self._attr_is_on = self._last_commanded_state
+                self.async_write_ha_state()
+            else:
+                # No cooldown, accept the state change
+                self._attr_is_on = new_state
+                self._last_commanded_state = new_state
+                self.async_write_ha_state()
 
     @property
     def available(self) -> bool:
