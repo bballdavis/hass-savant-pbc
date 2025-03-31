@@ -60,7 +60,6 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
 
     async def async_added_to_hass(self):
         """Handle entity which will be added."""
-        _LOGGER.debug("Setting up energy meter %s", self.name)
         await super().async_added_to_hass()
 
         # Restore previous state if available
@@ -147,13 +146,6 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
                 time_diff = (now - self._last_update).total_seconds() / 3600
                 avg_power = (old_power + new_power) / 2
                 energy_kwh = avg_power * time_diff / 1000
-                _LOGGER.debug(
-                    "%s: Power avg=%.1f W × %.4f h = %.5f kWh",
-                    self.name,
-                    avg_power,
-                    time_diff,
-                    energy_kwh,
-                )
 
                 self._yearly_usage += energy_kwh
                 self._daily_usage += energy_kwh

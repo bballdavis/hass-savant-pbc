@@ -25,7 +25,7 @@ def calculate_dmx_uid(uid: str) -> str:
             base_uid = (
                 f"{base_uid[:-1]}{chr(ord(last_char) + 1)}"  # Increment last character
             )
-    _LOGGER.debug("Generated DMX UID: %s for device UID: %s", base_uid, uid)
+    # _LOGGER.debug("Generated DMX UID: %s for device UID: %s", base_uid, uid)
     return base_uid
 
 
@@ -111,12 +111,6 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         device_name = power_sensor._device["name"]
         uid = power_sensor._device["uid"]
         device_info = power_sensor._attr_device_info
-
-        _LOGGER.debug(
-            "Creating enhanced utility meter for %s with source entity: %s",
-            device_name,
-            power_sensor.entity_id,
-        )
 
         # Create a single enhanced utility meter that tracks all periods
         utility_meter_sensors.append(
