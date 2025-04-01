@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta
 import aiohttp
 import asyncio
-from typing import Final
+from typing import Final, ClassVar
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.helpers.entity import DeviceInfo
@@ -20,6 +20,7 @@ DMX_PORT: Final = 9090
 DMX_ON_VALUE: Final = 255
 DMX_OFF_VALUE: Final = 0
 DMX_CACHE_SECONDS: Final = 30
+DMX_API_TIMEOUT: Final = 30  # Time in seconds to consider API down
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -46,6 +47,11 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
 class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
     """Representation of an Energy Snapshot Binary Sensor."""
+
+    # Class variables to track DMX API status across all instances
+    _last_successful_api_call: ClassVar[datetime | None] = None
+    _api_failure_count: ClassVar[int] = 0
+    _api_request_count: ClassVar[int] = 0
 
     def __init__(self, coordinator, device, unique_id, dmx_uid):
         """Initialize the binary sensor."""
@@ -86,6 +92,9 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
             url = f"http://{ip_address}:{DMX_PORT}/get_dmx?u={self._dmx_uid}"
 
             try:
+                # Increment request counter
+                EnergyDeviceBinarySensor._api_request_count += 1
+
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, timeout=10) as response:
                         if response.status == 200:
@@ -94,6 +103,10 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
                                 value = int(data.strip())
                                 self._dmx_status = value == DMX_ON_VALUE
                                 self._dmx_last_update = now
+
+                                # Update API status tracking
+                                EnergyDeviceBinarySensor._last_successful_api_call = now
+
                                 _LOGGER.debug(
                                     "DMX status for %s: %s",
                                     self._dmx_uid,
@@ -101,14 +114,18 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
                                 )
                             except ValueError:
                                 _LOGGER.debug("Invalid DMX response format: %s", data)
+                                EnergyDeviceBinarySensor._api_failure_count += 1
                         else:
                             _LOGGER.debug(
                                 "DMX request failed with status %s", response.status
                             )
+                            EnergyDeviceBinarySensor._api_failure_count += 1
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
                 _LOGGER.debug("Error making DMX request: %s", err)
+                EnergyDeviceBinarySensor._api_failure_count += 1
             except Exception as err:
                 _LOGGER.debug("Unexpected error in DMX request: %s", err)
+                EnergyDeviceBinarySensor._api_failure_count += 1
 
     @property
     def is_on(self) -> bool | None:
@@ -152,3 +169,14 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
     def icon(self) -> str:
         """Return the icon for the binary sensor."""
         return "mdi:toggle-switch-outline"
+
+    @classmethod
+    def is_dmx_api_available(cls) -> bool:
+        """Check if the DMX API is currently available."""
+        # If we've never made a successful call, can't determine status
+        if cls._last_successful_api_call is None:
+            return True  # Assume available until proven otherwise
+
+        # If the last successful call was too long ago, consider API down
+        time_since_last_success = datetime.now() - cls._last_successful_api_call
+        return time_since_last_success.total_seconds() < DMX_API_TIMEOUT

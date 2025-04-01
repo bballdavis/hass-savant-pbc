@@ -64,18 +64,33 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
             self.coordinator.async_add_listener(self._handle_coordinator_update)
         )
 
-    def _get_percent_commanded_state(self) -> bool:
-        """Get the state of the switch based on percentCommanded."""
+    def _get_percent_commanded_state(self) -> bool | None:
+        """Get the state of the switch based on percentCommanded, or None if unknown."""
         if self.coordinator.data and "presentDemands" in self.coordinator.data:
             for device in self.coordinator.data["presentDemands"]:
                 if device["uid"] == self._device["uid"]:
-                    return device.get("percentCommanded", 0) == 100
-        return False
+                    if "percentCommanded" in device:
+                        return device["percentCommanded"] == 100
+        return None
+
+    @property
+    def available(self) -> bool:
+        """Return True if the entity is available."""
+        # First check if coordinator data is available
+        if not self.coordinator.data or "presentDemands" not in self.coordinator.data:
+            return False
+
+        # Then check if we can get a valid relay state
+        relay_state = self._get_percent_commanded_state()
+        if relay_state is None:
+            return False
+
+        return True
 
     @property
     def is_on(self) -> bool:
         """Return the state of the switch."""
-        return self._attr_is_on
+        return self._attr_is_on if self._attr_is_on is not None else False
 
     async def async_turn_on(self, **kwargs):
         """Turn the switch on."""
@@ -105,10 +120,11 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
             channel_values = []
             for dev in self.coordinator.data["presentDemands"]:
                 if dev["uid"] == self._device["uid"]:
-                    channel_values.append("255")
+                    channel_values.append("255")  # Set this device to on
                 else:
+                    # Default to 255 (on) if percentCommanded is not available
                     channel_values.append(
-                        "255" if dev.get("percentCommanded", 255) == 100 else "0"
+                        "255" if dev.get("percentCommanded", 100) == 100 else "0"
                     )
 
             formatted_string = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://192.168.1.108:9090/set_dmx'
@@ -147,10 +163,11 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
             channel_values = []
             for dev in self.coordinator.data["presentDemands"]:
                 if dev["uid"] == self._device["uid"]:
-                    channel_values.append("0")
+                    channel_values.append("0")  # Set this device to off
                 else:
+                    # Default to 255 (on) if percentCommanded is not available
                     channel_values.append(
-                        "255" if dev.get("percentCommanded", 255) == 100 else "0"
+                        "255" if dev.get("percentCommanded", 100) == 100 else "0"
                     )
 
             formatted_string = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://192.168.1.108:9090/set_dmx'
@@ -188,11 +205,3 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
                 self._attr_is_on = new_state
                 self._last_commanded_state = new_state
                 self.async_write_ha_state()
-
-    @property
-    def available(self) -> bool:
-        """Return True if the entity is available."""
-        return (
-            self.coordinator.data is not None
-            and "presentDemands" in self.coordinator.data
-        )

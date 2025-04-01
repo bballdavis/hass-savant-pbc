@@ -151,6 +151,10 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
         self._dmx_uid = dmx_uid  # Ensure DMX UID is stored
         self._channel = device.get("channel")  # Add channel information
 
+        # Disable history for channel sensor
+        if sensor_type == "channel":
+            self._attr_entity_registry_enabled_default = False
+
     def _get_unit_of_measurement(self, sensor_type: str) -> str | None:
         """Return the unit of measurement for the sensor type."""
         match sensor_type:
@@ -172,7 +176,7 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
             case "voltage":
                 return "measurement"
             case "channel":
-                return None
+                return None  # No statistics for channel sensor
             case _:
                 return "measurement"
 
@@ -202,3 +206,28 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
                 return "mdi:tune-variant"
             case _:
                 return "mdi:gauge"
+
+    @property
+    def available(self) -> bool:
+        """Return True if the entity is available."""
+        if not self.coordinator.data or "presentDemands" not in self.coordinator.data:
+            return False
+
+        # Check if this specific device exists in the coordinator data
+        for device in self.coordinator.data["presentDemands"]:
+            if device["uid"] == self._device["uid"]:
+                # For relay status (percentCommanded), check if the value exists
+                if (
+                    self._sensor_type == "percentCommanded"
+                    and "percentCommanded" not in device
+                ):
+                    return False
+                # For other sensor types, check if the value exists
+                elif (
+                    self._sensor_type != "percentCommanded"
+                    and self._sensor_type not in device
+                ):
+                    return False
+                return True
+
+        return False

@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict
+from decimal import Decimal, ROUND_HALF_UP
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import UnitOfEnergy
@@ -271,11 +272,23 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         """Return entity specific state attributes."""
-        # Follow standard Home Assistant attribute naming (no _kwh suffix)
+        # Ensure consistent decimal precision with proper float values
         return {
-            "daily_usage": round(self._daily_usage, 1),  # Changed from 3 to 1
-            "monthly_usage": round(self._monthly_usage, 1),  # Changed from 3 to 1
-            "yearly_usage": round(self._yearly_usage, 1),  # Changed from 3 to 1
+            "daily_usage": float(
+                Decimal(str(self._daily_usage)).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+            ),
+            "monthly_usage": float(
+                Decimal(str(self._monthly_usage)).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+            ),
+            "yearly_usage": float(
+                Decimal(str(self._yearly_usage)).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+            ),
             "last_reset": self._last_reset.isoformat(),
         }
 
