@@ -10,11 +10,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER
+from .const import DOMAIN, MANUFACTURER, DEFAULT_OLA_PORT
 
 _LOGGER = logging.getLogger(__name__)
 
 ALL_LOADS_BUTTON_NAME: Final = "All Loads On"
+DEFAULT_CHANNEL_COUNT: Final = 50
 
 
 async def async_setup_entry(
@@ -57,14 +58,21 @@ class SavantAllLoadsButton(ButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press - send command to turn on all loads."""
-        if not self.coordinator.data or "presentDemands" not in self.coordinator.data:
-            _LOGGER.warning(
-                "No device data available, cannot send all loads on command"
-            )
-            return
+        # Default to 50 channels if we can't get actual count
+        devices_count = DEFAULT_CHANNEL_COUNT
 
-        # Always set ALL channels to 255 regardless of availability
-        devices_count = len(self.coordinator.data["presentDemands"])
+        # Try to determine actual count from data
+        if self.coordinator.data and "presentDemands" in self.coordinator.data:
+            if len(self.coordinator.data["presentDemands"]) > 0:
+                devices_count = len(self.coordinator.data["presentDemands"])
+            else:
+                _LOGGER.debug(
+                    "No devices found in data, using %s channels", devices_count
+                )
+        else:
+            _LOGGER.debug("No device data available, using %s channels", devices_count)
+
+        # Set all channels to 255
         channel_values = ["255"] * devices_count
 
         # Get IP address from config entry
@@ -73,13 +81,14 @@ class SavantAllLoadsButton(ButtonEntity):
             _LOGGER.warning("No IP address available, cannot send all loads on command")
             return
 
+        # Get OLA port from config entry or use default
+        ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
+
         # Format the command string
-        formatted_string = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://{ip_address}:9090/set_dmx'
+        formatted_string = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://{ip_address}:{ola_port}/set_dmx'
 
         # Log the command
         _LOGGER.debug("Sending all loads on command: %s", formatted_string)
-
-        # Note: No longer attempting to update other entities
 
 
 class SavantApiCommandLogButton(ButtonEntity):
@@ -116,13 +125,23 @@ class SavantApiCommandLogButton(ButtonEntity):
             )
             return
 
-        # Generate an example curl command for all loads
+        # Get OLA port from config entry or use default
+        ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
+
+        # Default to 50 channels if we can't get actual count
+        devices_count = DEFAULT_CHANNEL_COUNT
+
+        # Try to determine actual count from data
         if self.coordinator.data and "presentDemands" in self.coordinator.data:
-            devices_count = len(self.coordinator.data["presentDemands"])
-            channel_values = ["255"] * devices_count
-            curl_command = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://{ip_address}:9090/set_dmx'
-            _LOGGER.info("DMX API command example: %s", curl_command)
+            if len(self.coordinator.data["presentDemands"]) > 0:
+                devices_count = len(self.coordinator.data["presentDemands"])
+            else:
+                _LOGGER.debug(
+                    "No devices found in data, using %s channels", devices_count
+                )
         else:
-            _LOGGER.warning(
-                "No device data available, cannot generate curl command example"
-            )
+            _LOGGER.debug("No device data available, using %s channels", devices_count)
+
+        channel_values = ["255"] * devices_count
+        curl_command = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://{ip_address}:{ola_port}/set_dmx'
+        _LOGGER.info("DMX API command example: %s", curl_command)

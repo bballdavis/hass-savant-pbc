@@ -10,13 +10,12 @@ from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, DEFAULT_OLA_PORT
 from .sensor import calculate_dmx_uid, get_device_model
 
 _LOGGER = logging.getLogger(__name__)
 
 # DMX API constants
-DMX_PORT: Final = 9090
 DMX_ON_VALUE: Final = 255
 DMX_OFF_VALUE: Final = 0
 DMX_CACHE_SECONDS: Final = 30
@@ -89,7 +88,12 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
                 _LOGGER.debug("No IP address available for DMX request")
                 return
 
-            url = f"http://{ip_address}:{DMX_PORT}/get_dmx?u={self._dmx_uid}"
+            # Get OLA port from config entry or use default
+            ola_port = self.coordinator.config_entry.data.get(
+                "ola_port", DEFAULT_OLA_PORT
+            )
+
+            url = f"http://{ip_address}:{ola_port}/get_dmx?u={self._dmx_uid}"
 
             try:
                 # Increment request counter
