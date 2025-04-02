@@ -9,8 +9,9 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN, MANUFACTURER
-from .models import get_device_model  # Import from models.py instead of sensor.py
+from .const import DOMAIN, CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN, MANUFACTURER, DEFAULT_OLA_PORT
+from .models import get_device_model
+from .utils import calculate_dmx_uid, async_set_dmx_values
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,12 +29,13 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     )
 
     entities = []
+    snapshot_data = coordinator.data.get("snapshot_data", {})
     if (
-        coordinator.data
-        and isinstance(coordinator.data, dict)
-        and "presentDemands" in coordinator.data
+        snapshot_data
+        and isinstance(snapshot_data, dict)
+        and "presentDemands" in snapshot_data
     ):
-        for device in coordinator.data["presentDemands"]:
+        for device in snapshot_data["presentDemands"]:
             entities.append(EnergyDeviceSwitch(hass, coordinator, device, cooldown))
 
     async_add_entities(entities)
@@ -48,8 +50,8 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         self._hass = hass
         self._device = device
         self._cooldown = cooldown
-        self._attr_name = f"{device['name']} Switch"
-        self._attr_unique_id = f"{DOMAIN}_{device['uid']}_switch"
+        self._attr_name = f"{device['name']} Breaker"
+        self._attr_unique_id = f"{DOMAIN}_{device['uid']}_breaker"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, str(device["uid"]))},
             name=device["name"],
@@ -66,8 +68,9 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
 
     def _get_percent_commanded_state(self) -> bool | None:
         """Get the state of the switch based on percentCommanded, or None if unknown."""
-        if self.coordinator.data and "presentDemands" in self.coordinator.data:
-            for device in self.coordinator.data["presentDemands"]:
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
                 if device["uid"] == self._device["uid"]:
                     if "percentCommanded" in device:
                         return device["percentCommanded"] == 100
@@ -77,7 +80,8 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
     def available(self) -> bool:
         """Return True if the entity is available."""
         # First check if coordinator data is available
-        if not self.coordinator.data or "presentDemands" not in self.coordinator.data:
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if not snapshot_data or "presentDemands" not in snapshot_data:
             return False
 
         # Then check if we can get a valid relay state
@@ -117,23 +121,58 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         if not self.is_on:
             _last_command_time = now  # Set cooldown timer only when actually proceeding
 
-            channel_values = []
-            for dev in self.coordinator.data["presentDemands"]:
-                if dev["uid"] == self._device["uid"]:
-                    channel_values.append("255")  # Set this device to on
-                else:
-                    # Default to 255 (on) if percentCommanded is not available
-                    channel_values.append(
-                        "255" if dev.get("percentCommanded", 100) == 100 else "0"
-                    )
+            # Create a dictionary to map channels to values
+            channel_values = {}  # Maps channel -> value
+            device_channels = {}  # Maps uid -> channel
+            snapshot_data = self.coordinator.data.get("snapshot_data", {})
+            
+            # First, collect channel numbers for all devices
+            for dev in snapshot_data.get("presentDemands", []):
+                channel = dev.get("channel")
+                if channel is not None:
+                    try:
+                        channel_num = int(channel)
+                        device_channels[dev["uid"]] = channel_num
+                    except (ValueError, TypeError):
+                        _LOGGER.warning(f"Invalid channel value for device {dev['uid']}: {channel}")
+            
+            # Next, look up relay status for each device and set channel values accordingly
+            dmx_data = self.coordinator.data.get("dmx_data", {})  # Get DMX status data
+            
+            for dev in snapshot_data.get("presentDemands", []):
+                if dev["uid"] in device_channels:
+                    channel_num = device_channels[dev["uid"]]
+                    
+                    # For the device we're turning on, set to 255
+                    if dev["uid"] == self._device["uid"]:
+                        channel_values[channel_num] = "255"
+                    else:
+                        # For other devices, check relay status or fallback to percentCommanded
+                        if channel_num in dmx_data:
+                            # Use DMX status if available
+                            channel_values[channel_num] = "255" if dmx_data[channel_num] else "0"
+                        else:
+                            # Fallback to percentCommanded - assume ON if not available
+                            channel_values[channel_num] = "255" if dev.get("percentCommanded", 100) == 100 else "0"
+            
+            # Get IP address from config entry
+            ip_address = self.coordinator.config_entry.data.get("address")
+            if not ip_address:
+                _LOGGER.warning("No IP address available, cannot send command")
+                return
 
-            formatted_string = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://192.168.1.108:9090/set_dmx'
-            _LOGGER.debug("Formatted string: %s", formatted_string)
+            # Get OLA port from config entry or use default
+            ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
+            
+            # Use utility function to set DMX values
+            success = await async_set_dmx_values(ip_address, channel_values, ola_port)
 
-            # Add the actual API call to turn the switch on
-            self._attr_is_on = True
-            self._last_commanded_state = True
-            self.async_write_ha_state()
+            if success:
+                self._attr_is_on = True
+                self._last_commanded_state = True
+                self.async_write_ha_state()
+            else:
+                _LOGGER.warning("Failed to send turn_on command to device %s", self._device["name"])
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
@@ -160,23 +199,58 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         if self.is_on:
             _last_command_time = now  # Set cooldown timer only when actually proceeding
 
-            channel_values = []
-            for dev in self.coordinator.data["presentDemands"]:
-                if dev["uid"] == self._device["uid"]:
-                    channel_values.append("0")  # Set this device to off
-                else:
-                    # Default to 255 (on) if percentCommanded is not available
-                    channel_values.append(
-                        "255" if dev.get("percentCommanded", 100) == 100 else "0"
-                    )
+            # Create a dictionary to map channels to values
+            channel_values = {}  # Maps channel -> value
+            device_channels = {}  # Maps uid -> channel
+            snapshot_data = self.coordinator.data.get("snapshot_data", {})
+            
+            # First, collect channel numbers for all devices
+            for dev in snapshot_data.get("presentDemands", []):
+                channel = dev.get("channel")
+                if channel is not None:
+                    try:
+                        channel_num = int(channel)
+                        device_channels[dev["uid"]] = channel_num
+                    except (ValueError, TypeError):
+                        _LOGGER.warning(f"Invalid channel value for device {dev['uid']}: {channel}")
+            
+            # Next, look up relay status for each device and set channel values accordingly
+            dmx_data = self.coordinator.data.get("dmx_data", {})  # Get DMX status data
+            
+            for dev in snapshot_data.get("presentDemands", []):
+                if dev["uid"] in device_channels:
+                    channel_num = device_channels[dev["uid"]]
+                    
+                    # For the device we're turning off, set to 0
+                    if dev["uid"] == self._device["uid"]:
+                        channel_values[channel_num] = "0"
+                    else:
+                        # For other devices, check relay status or fallback to percentCommanded
+                        if channel_num in dmx_data:
+                            # Use DMX status if available
+                            channel_values[channel_num] = "255" if dmx_data[channel_num] else "0"
+                        else:
+                            # Fallback to percentCommanded - assume ON if not available
+                            channel_values[channel_num] = "255" if dev.get("percentCommanded", 100) == 100 else "0"
+            
+            # Get IP address from config entry
+            ip_address = self.coordinator.config_entry.data.get("address")
+            if not ip_address:
+                _LOGGER.warning("No IP address available, cannot send command")
+                return
 
-            formatted_string = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://192.168.1.108:9090/set_dmx'
-            _LOGGER.debug("Formatted string: %s", formatted_string)
+            # Get OLA port from config entry or use default
+            ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
+            
+            # Use utility function to set DMX values
+            success = await async_set_dmx_values(ip_address, channel_values, ola_port)
 
-            # Add the actual API call to turn the switch off
-            self._attr_is_on = False
-            self._last_commanded_state = False
-            self.async_write_ha_state()
+            if success:
+                self._attr_is_on = False
+                self._last_commanded_state = False
+                self.async_write_ha_state()
+            else:
+                _LOGGER.warning("Failed to send turn_off command to device %s", self._device["name"])
 
     @callback
     def _handle_coordinator_update(self) -> None:

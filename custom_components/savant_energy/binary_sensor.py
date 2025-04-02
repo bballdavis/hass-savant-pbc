@@ -2,24 +2,20 @@
 
 import logging
 from datetime import datetime, timedelta
-import aiohttp
-import asyncio
-from typing import Final, ClassVar
+from typing import Optional, Final
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.core import callback
 
-from .const import DOMAIN, DEFAULT_OLA_PORT
-from .sensor import calculate_dmx_uid, get_device_model
+from .const import DOMAIN, MANUFACTURER, DEFAULT_OLA_PORT
+from .models import get_device_model
+# Import with explicit name to verify we're using the right function
+from .utils import calculate_dmx_uid, DMX_CACHE_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
-
-# DMX API constants
-DMX_ON_VALUE: Final = 255
-DMX_OFF_VALUE: Final = 0
-DMX_CACHE_SECONDS: Final = 30
-DMX_API_TIMEOUT: Final = 30  # Time in seconds to consider API down
+_LOGGER.warning("Savant Energy binary_sensor module loaded")
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -27,12 +23,13 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     coordinator = hass.data[DOMAIN][config_entry.entry_id]
 
     entities = []
+    snapshot_data = coordinator.data.get("snapshot_data", {})
     if (
-        coordinator.data
-        and isinstance(coordinator.data, dict)
-        and "presentDemands" in coordinator.data
+        snapshot_data
+        and isinstance(snapshot_data, dict)
+        and "presentDemands" in snapshot_data
     ):
-        for device in coordinator.data["presentDemands"]:
+        for device in snapshot_data["presentDemands"]:
             uid = device["uid"]
             dmx_uid = calculate_dmx_uid(uid)
             entities.append(
@@ -47,104 +44,75 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
     """Representation of an Energy Snapshot Binary Sensor."""
 
-    # Class variables to track DMX API status across all instances
-    _last_successful_api_call: ClassVar[datetime | None] = None
-    _api_failure_count: ClassVar[int] = 0
-    _api_request_count: ClassVar[int] = 0
-
     def __init__(self, coordinator, device, unique_id, dmx_uid):
         """Initialize the binary sensor."""
         super().__init__(coordinator)
         self._device = device
         self._attr_name = f"{device['name']} Relay Status"
         self._attr_unique_id = unique_id
-        self._dmx_uid = dmx_uid
-        self._dmx_status = None
-        self._dmx_last_update = None
+        self._dmx_uid = dmx_uid  # Still store for device info
+        self._device_uid = device["uid"]
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, str(device["uid"]))},
             name=device["name"],
             serial_number=dmx_uid,  # Set DMX UID as the serial number
-            manufacturer="Savant",
+            manufacturer=MANUFACTURER,
             model=get_device_model(device.get("capacity", 0)),  # Determine model
         )
 
-    async def async_update(self) -> None:
-        """Update the entity."""
-        await super().async_update()
-        # Try to fetch the DMX status
-        await self._update_dmx_status()
+    def _get_channel_value(self) -> Optional[int]:
+        """Get the channel value from the channel sensor if available."""
+        # Find the channel sensor for this device
+        channel_sensor_entity_id = f"sensor.{self._device['name'].lower().replace(' ', '_')}_channel"
+        
+        if self.hass and channel_sensor_entity_id in self.hass.states.async_entity_ids("sensor"):
+            channel_state = self.hass.states.get(channel_sensor_entity_id)
+            if channel_state and channel_state.state not in ('unknown', 'unavailable', ''):
+                try:
+                    return int(channel_state.state)
+                except (ValueError, TypeError):
+                    _LOGGER.warning(f"Invalid channel value in sensor {channel_sensor_entity_id}: {channel_state.state}")
 
-    async def _update_dmx_status(self) -> None:
-        """Update the DMX status via HTTP request."""
-        # Check if we need to update the cached value
-        now = datetime.now()
-        if self._dmx_last_update is None or now - self._dmx_last_update > timedelta(
-            seconds=DMX_CACHE_SECONDS
-        ):
-            # Get IP address from config entry
-            ip_address = self.coordinator.config_entry.data.get("address")
-            if not ip_address:
-                _LOGGER.debug("No IP address available for DMX request")
-                return
-
-            # Get OLA port from config entry or use default
-            ola_port = self.coordinator.config_entry.data.get(
-                "ola_port", DEFAULT_OLA_PORT
-            )
-
-            url = f"http://{ip_address}:{ola_port}/get_dmx?u={self._dmx_uid}"
-
-            try:
-                # Increment request counter
-                EnergyDeviceBinarySensor._api_request_count += 1
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=10) as response:
-                        if response.status == 200:
-                            data = await response.text()
-                            try:
-                                value = int(data.strip())
-                                self._dmx_status = value == DMX_ON_VALUE
-                                self._dmx_last_update = now
-
-                                # Update API status tracking
-                                EnergyDeviceBinarySensor._last_successful_api_call = now
-
-                                _LOGGER.debug(
-                                    "DMX status for %s: %s",
-                                    self._dmx_uid,
-                                    self._dmx_status,
-                                )
-                            except ValueError:
-                                _LOGGER.debug("Invalid DMX response format: %s", data)
-                                EnergyDeviceBinarySensor._api_failure_count += 1
-                        else:
-                            _LOGGER.debug(
-                                "DMX request failed with status %s", response.status
-                            )
-                            EnergyDeviceBinarySensor._api_failure_count += 1
-            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-                _LOGGER.debug("Error making DMX request: %s", err)
-                EnergyDeviceBinarySensor._api_failure_count += 1
-            except Exception as err:
-                _LOGGER.debug("Unexpected error in DMX request: %s", err)
-                EnergyDeviceBinarySensor._api_failure_count += 1
+        # Alternative entity ID format - try with UID
+        alt_channel_sensor_entity_id = f"sensor.savantenergy_{self._device_uid}_channel"
+        if self.hass and alt_channel_sensor_entity_id in self.hass.states.async_entity_ids("sensor"):
+            channel_state = self.hass.states.get(alt_channel_sensor_entity_id)
+            if channel_state and channel_state.state not in ('unknown', 'unavailable', ''):
+                try:
+                    return int(channel_state.state)
+                except (ValueError, TypeError):
+                    _LOGGER.warning(f"Invalid channel value in sensor {alt_channel_sensor_entity_id}: {channel_state.state}")
+                    
+        return None
 
     @property
-    def is_on(self) -> bool | None:
+    def is_on(self) -> Optional[bool]:
         """Return true if the relay status is on."""
-        # First try to use DMX status if available and recent
-        if self._dmx_status is not None and self._dmx_last_update is not None:
-            if datetime.now() - self._dmx_last_update <= timedelta(
-                seconds=DMX_CACHE_SECONDS
-            ):
-                return self._dmx_status
+        # Get DMX data
+        dmx_data = self.coordinator.data.get("dmx_data", {})
+        
+        # Try to get channel from channel sensor first, then from device_channel_map if needed
+        channel = self._get_channel_value()
+        channel_source = "channel_sensor"
+        
+        if channel is None:
+            device_channel_map = self.coordinator.data.get("device_channel_map", {})
+            if self._device_uid in device_channel_map:
+                channel = device_channel_map[self._device_uid]
+                channel_source = "device_channel_map"
+        
+        # If we have a channel and DMX data for it, use that
+        if channel is not None and channel in dmx_data:
+            # Simplified logging - only log the channel and its source once
+            #_LOGGER.debug(f"DMX status for {self._attr_name} (channel {channel} from {channel_source}): {dmx_data[channel]}")
+            return dmx_data[channel]
 
-        # Fall back to the existing method using coordinator data
-        if self.coordinator.data and "presentDemands" in self.coordinator.data:
-            for device in self.coordinator.data["presentDemands"]:
-                if device["uid"] == self._device["uid"]:
+        # Real fallback: presentDemands data from coordinator when DMX data not available
+        _LOGGER.debug(f"No DMX data for {self._attr_name} (channel {channel}), using presentDemands data")
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device_uid:
                     value = device.get("percentCommanded")
                     if isinstance(value, int):
                         return value == 100  # Relay is on if percentCommanded is 100
@@ -154,17 +122,26 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def available(self) -> bool:
         """Return True if the entity is available."""
-        # We're available if we have recent DMX data OR coordinator data
-        has_dmx_data = (
-            self._dmx_status is not None
-            and self._dmx_last_update is not None
-            and datetime.now() - self._dmx_last_update
-            <= timedelta(seconds=DMX_CACHE_SECONDS * 2)
-        )
-
+        # We're available if we have DMX data for our channel OR coordinator data
+        dmx_data = self.coordinator.data.get("dmx_data", {})
+        
+        # Check if we can get channel data
+        channel = self._get_channel_value()
+        
+        has_dmx_data = False
+        if channel is not None:
+            has_dmx_data = channel in dmx_data
+        else:
+            # Fallback to device_channel_map
+            device_channel_map = self.coordinator.data.get("device_channel_map", {})
+            if self._device_uid in device_channel_map:
+                channel = device_channel_map[self._device_uid]
+                has_dmx_data = channel in dmx_data
+        
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
         has_coordinator_data = (
-            self.coordinator.data is not None
-            and "presentDemands" in self.coordinator.data
+            snapshot_data is not None
+            and "presentDemands" in snapshot_data
         )
 
         return has_dmx_data or has_coordinator_data
@@ -173,14 +150,3 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
     def icon(self) -> str:
         """Return the icon for the binary sensor."""
         return "mdi:toggle-switch-outline"
-
-    @classmethod
-    def is_dmx_api_available(cls) -> bool:
-        """Check if the DMX API is currently available."""
-        # If we've never made a successful call, can't determine status
-        if cls._last_successful_api_call is None:
-            return True  # Assume available until proven otherwise
-
-        # If the last successful call was too long ago, consider API down
-        time_since_last_success = datetime.now() - cls._last_successful_api_call
-        return time_since_last_success.total_seconds() < DMX_API_TIMEOUT

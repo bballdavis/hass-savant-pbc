@@ -1,8 +1,12 @@
-"""Models for the Savant Energy integration."""
+"""Models and device information functions for Savant Energy."""
 
+from typing import Union
 
-def get_device_model(capacity: float) -> str:
-    """Determine the device model based on capacity."""
+def get_device_model(capacity: Union[int, float, None]) -> str:
+    """Determine device model based on capacity."""
+    if capacity is None:
+        return "Unknown"
+    
     match capacity:
         case 2.4:
             return "Dual 20A Relay"

@@ -9,24 +9,9 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, MANUFACTURER
 from .models import get_device_model
 from .utility_meter_sensor import EnhancedUtilityMeterSensor
+from .utils import calculate_dmx_uid
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def calculate_dmx_uid(uid: str) -> str:
-    """Calculate the DMX UID based on the device UID."""
-    base_uid = uid.split(".")[0]
-    base_uid = f"{base_uid[:4]}:{base_uid[4:]}"  # Ensure proper formatting
-    if uid.endswith(".1"):
-        last_char = base_uid[-1]
-        if last_char == "9":
-            base_uid = f"{base_uid[:-1]}A"  # Convert 9 to A
-        else:
-            base_uid = (
-                f"{base_uid[:-1]}{chr(ord(last_char) + 1)}"  # Increment last character
-            )
-    # _LOGGER.debug("Generated DMX UID: %s for device UID: %s", base_uid, uid)
-    return base_uid
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -36,18 +21,19 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entities = []
     power_sensors = []  # Keep track of power sensors for utility meter creation
 
+    snapshot_data = coordinator.data.get("snapshot_data", {})
     if (
-        coordinator.data
-        and isinstance(coordinator.data, dict)
-        and "presentDemands" in coordinator.data
+        snapshot_data
+        and isinstance(snapshot_data, dict)
+        and "presentDemands" in snapshot_data
     ):
-        demands_str = str(coordinator.data["presentDemands"])
+        demands_str = str(snapshot_data["presentDemands"])
         _LOGGER.debug(
             "Processing presentDemands: %.50s... (total length: %d)",
             demands_str,
             len(demands_str),
         )
-        for device in coordinator.data["presentDemands"]:
+        for device in snapshot_data["presentDemands"]:
             uid = device["uid"]
             dmx_uid = calculate_dmx_uid(uid)
             _LOGGER.debug(
@@ -150,10 +136,8 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
         )
         self._dmx_uid = dmx_uid  # Ensure DMX UID is stored
         self._channel = device.get("channel")  # Add channel information
-
-        # Disable history for channel sensor
         if sensor_type == "channel":
-            self._attr_entity_registry_enabled_default = False
+            self._attr_entity_registry_enabled_default = True
 
     def _get_unit_of_measurement(self, sensor_type: str) -> str | None:
         """Return the unit of measurement for the sensor type."""
@@ -183,14 +167,17 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
-        if self.coordinator.data and "presentDemands" in self.coordinator.data:
-            for device in self.coordinator.data["presentDemands"]:
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
                 if device["uid"] == self._device["uid"]:
+                    # Get value based on sensor type
+                    if self._sensor_type == "channel":
+                        return device.get("channel")
+                    
                     value = device.get(self._sensor_type)
                     if self._sensor_type == "power" and isinstance(value, (int, float)):
                         return int(value * 1000)  # Convert kW to W
-                    if self._sensor_type == "channel" and isinstance(value, int):
-                        return value
                     return value
         return None
 
@@ -210,11 +197,12 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return True if the entity is available."""
-        if not self.coordinator.data or "presentDemands" not in self.coordinator.data:
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if not snapshot_data or "presentDemands" not in snapshot_data:
             return False
 
         # Check if this specific device exists in the coordinator data
-        for device in self.coordinator.data["presentDemands"]:
+        for device in snapshot_data["presentDemands"]:
             if device["uid"] == self._device["uid"]:
                 # For relay status (percentCommanded), check if the value exists
                 if (

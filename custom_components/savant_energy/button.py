@@ -11,6 +11,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, MANUFACTURER, DEFAULT_OLA_PORT
+from .utils import async_set_dmx_values, get_dmx_api_stats
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,17 +25,23 @@ async def async_setup_entry(
     """Set up the Savant Energy button."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # Only add the all loads button if we have data
+    # Only add buttons if we have data
+    snapshot_data = coordinator.data.get("snapshot_data", {})
     if (
-        coordinator.data
-        and isinstance(coordinator.data, dict)
-        and "presentDemands" in coordinator.data
+        snapshot_data
+        and isinstance(snapshot_data, dict)
+        and "presentDemands" in snapshot_data
     ):
         async_add_entities(
             [
                 SavantAllLoadsButton(hass, coordinator),
                 SavantApiCommandLogButton(hass, coordinator),
+                SavantApiStatsButton(hass, coordinator),
             ]
+        )
+    else:
+        _LOGGER.warning(
+            "No presentDemands data found in coordinator snapshot_data, buttons not added"
         )
 
 
@@ -58,22 +65,30 @@ class SavantAllLoadsButton(ButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press - send command to turn on all loads."""
-        # Default to 50 channels if we can't get actual count
-        devices_count = DEFAULT_CHANNEL_COUNT
-
+        # Set all channels to ON (255)
+        channel_values = {}
+        
         # Try to determine actual count from data
         if self.coordinator.data and "presentDemands" in self.coordinator.data:
-            if len(self.coordinator.data["presentDemands"]) > 0:
-                devices_count = len(self.coordinator.data["presentDemands"])
-            else:
-                _LOGGER.debug(
-                    "No devices found in data, using %s channels", devices_count
-                )
+            # Find all device channels
+            for device in self.coordinator.data["presentDemands"]:
+                if "channel" in device:
+                    try:
+                        channel = int(device["channel"])
+                        # Set the channel to "on"
+                        channel_values[channel] = "255"
+                    except (ValueError, TypeError):
+                        continue
+            
+            # If no valid channels found, create some defaults
+            if not channel_values:
+                # Default to handling channels 1-50
+                for ch in range(1, DEFAULT_CHANNEL_COUNT + 1):
+                    channel_values[ch] = "255"
         else:
-            _LOGGER.debug("No device data available, using %s channels", devices_count)
-
-        # Set all channels to 255
-        channel_values = ["255"] * devices_count
+            # Default to handling channels 1-50
+            for ch in range(1, DEFAULT_CHANNEL_COUNT + 1):
+                channel_values[ch] = "255"
 
         # Get IP address from config entry
         ip_address = self.coordinator.config_entry.data.get("address")
@@ -84,11 +99,13 @@ class SavantAllLoadsButton(ButtonEntity):
         # Get OLA port from config entry or use default
         ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
 
-        # Format the command string
-        formatted_string = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://{ip_address}:{ola_port}/set_dmx'
-
-        # Log the command
-        _LOGGER.debug("Sending all loads on command: %s", formatted_string)
+        # Use utility function to send command
+        success = await async_set_dmx_values(ip_address, channel_values, ola_port)
+        
+        if success:
+            _LOGGER.info("All loads turned on successfully")
+        else:
+            _LOGGER.warning("Failed to turn on all loads")
 
 
 class SavantApiCommandLogButton(ButtonEntity):
@@ -128,20 +145,94 @@ class SavantApiCommandLogButton(ButtonEntity):
         # Get OLA port from config entry or use default
         ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
 
-        # Default to 50 channels if we can't get actual count
-        devices_count = DEFAULT_CHANNEL_COUNT
-
-        # Try to determine actual count from data
+        # Example channel values to turn everything on
+        channel_values = {}
+        
+        # Try to determine actual channels from data
         if self.coordinator.data and "presentDemands" in self.coordinator.data:
-            if len(self.coordinator.data["presentDemands"]) > 0:
-                devices_count = len(self.coordinator.data["presentDemands"])
-            else:
-                _LOGGER.debug(
-                    "No devices found in data, using %s channels", devices_count
-                )
-        else:
-            _LOGGER.debug("No device data available, using %s channels", devices_count)
-
-        channel_values = ["255"] * devices_count
-        curl_command = f'curl -X POST -d "u=1&d={",".join(channel_values)}" http://{ip_address}:{ola_port}/set_dmx'
+            for device in self.coordinator.data["presentDemands"]:
+                if "channel" in device:
+                    try:
+                        channel = int(device["channel"])
+                        channel_values[channel] = "255"
+                    except (ValueError, TypeError):
+                        continue
+        
+        # If no valid channels found, create some defaults
+        if not channel_values:
+            # Default to handling channels 1-50
+            for ch in range(1, DEFAULT_CHANNEL_COUNT + 1):
+                channel_values[ch] = "255"
+        
+        # Find the maximum channel number
+        max_channel = max(channel_values.keys()) if channel_values else DEFAULT_CHANNEL_COUNT
+        
+        # Create array of values where index position corresponds to channel-1
+        value_array = ["0"] * max_channel
+        
+        # Set values in the array
+        for channel, value in channel_values.items():
+            if 1 <= channel <= max_channel:
+                value_array[channel-1] = value
+        
+        # Format the data as simple comma-separated values
+        data_param = ",".join(value_array)
+        
+        # Format the curl command properly
+        curl_command = f'curl -X POST -d "u=1&d={data_param}" http://{ip_address}:{ola_port}/set_dmx'
         _LOGGER.info("DMX API command example: %s", curl_command)
+
+
+class SavantApiStatsButton(ButtonEntity):
+    """Button to display DMX API statistics."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = ButtonDeviceClass.RESTART
+
+    def __init__(self, hass: HomeAssistant, coordinator) -> None:
+        """Initialize the button."""
+        self.hass = hass
+        self.coordinator = coordinator
+        self._attr_name = "DMX API Statistics"
+        self._attr_unique_id = f"{DOMAIN}_dmx_api_stats"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, "savant_energy_controller")},
+            name="Savant Energy",
+            manufacturer=MANUFACTURER,
+        )
+
+    @property
+    def icon(self) -> str:
+        """Return the button icon."""
+        return "mdi:chart-line"
+
+    async def async_press(self) -> None:
+        """Handle the button press - display API statistics."""
+        stats = get_dmx_api_stats()
+        
+        last_success = "Never" if stats["last_successful_call"] is None else stats["last_successful_call"].isoformat()
+        
+        _LOGGER.info(
+            "DMX API Stats: Success rate: %.1f%%, Requests: %d, Failures: %d, Last success: %s",
+            stats["success_rate"],
+            stats["request_count"],
+            stats["failure_count"],
+            last_success
+        )
+        
+        # Display a notification in Home Assistant
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": "DMX API Statistics",
+                "message": f"""
+Success Rate: {stats['success_rate']:.1f}%
+Total Requests: {stats['request_count']}
+Failed Requests: {stats['failure_count']}
+Last Success: {last_success}
+                """,
+                "notification_id": f"{DOMAIN}_api_stats",
+            },
+        )
