@@ -11,7 +11,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN, MANUFACTURER, DEFAULT_OLA_PORT
 from .models import get_device_model
-from .utils import calculate_dmx_uid, async_set_dmx_values
+from .utils import calculate_dmx_uid, async_set_dmx_values, async_get_dmx_address
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +52,8 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         self._cooldown = cooldown
         self._attr_name = f"{device['name']} Breaker"
         self._attr_unique_id = f"{DOMAIN}_{device['uid']}_breaker"
+        self._dmx_uid = calculate_dmx_uid(device["uid"])
+        self._dmx_address = None  # Will be fetched before sending commands
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, str(device["uid"]))},
             name=device["name"],
@@ -59,6 +61,7 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
             model=get_device_model(
                 device.get("capacity", 0)
             ),  # Use the model lookup function
+            serial_number=self._dmx_uid,  # Add DMX UID as serial number
         )
         self._attr_is_on = self._get_percent_commanded_state()
         self._last_commanded_state = self._attr_is_on
@@ -75,6 +78,58 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
                     if "percentCommanded" in device:
                         return device["percentCommanded"] == 100
         return None
+
+    async def _get_dmx_address_from_sensor(self) -> int | None:
+        """Try to get the DMX address from the sensor entity."""
+        # Construct the sensor entity_id
+        dmx_address_entity_id = f"sensor.{self._device['name'].lower().replace(' ', '_')}_dmx_address"
+        # Try more variations if the simple approach doesn't work
+        alternative_entity_id = f"sensor.savant_energy_{self._device['uid']}_dmx_address"
+        
+        # Check if sensor exists in Home Assistant's state machine
+        state = self._hass.states.get(dmx_address_entity_id)
+        if not state or state.state in ('unknown', 'unavailable'):
+            # Try alternative entity_id
+            state = self._hass.states.get(alternative_entity_id)
+            
+        if state and state.state not in ('unknown', 'unavailable'):
+            try:
+                return int(state.state)
+            except (ValueError, TypeError):
+                _LOGGER.warning(f"Invalid DMX address in sensor {state.entity_id}: {state.state}")
+                
+        return None
+
+    async def _fetch_dmx_address(self) -> int | None:
+        """Fetch DMX address either from sensor or directly from API."""
+        # First try to get from sensor
+        address = await self._get_dmx_address_from_sensor()
+        if address is not None:
+            return address
+            
+        # If sensor doesn't have the address, fetch directly from API
+        if not self.coordinator.config_entry:
+            _LOGGER.warning(f"No config entry available for {self.name}")
+            return None
+            
+        ip_address = self.coordinator.config_entry.data.get("address")
+        ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
+        
+        if not ip_address:
+            _LOGGER.warning(f"No IP address available for {self.name}")
+            return None
+            
+        # Default universe is 1
+        universe = 1
+        
+        _LOGGER.debug(f"Fetching DMX address for {self.name} with UID {self._dmx_uid}")
+        address = await async_get_dmx_address(ip_address, ola_port, universe, self._dmx_uid)
+        if address is not None:
+            _LOGGER.info(f"Fetched DMX address for {self.name}: {address}")
+            return address
+        else:
+            _LOGGER.warning(f"Failed to fetch DMX address for {self.name}")
+            return None
 
     @property
     def available(self) -> bool:
@@ -93,7 +148,7 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        """Return the state of the switch."""
+        """Return the state of the switch based solely on percentCommanded."""
         return self._attr_is_on if self._attr_is_on is not None else False
 
     async def async_turn_on(self, **kwargs):
@@ -121,39 +176,19 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         if not self.is_on:
             _last_command_time = now  # Set cooldown timer only when actually proceeding
 
-            # Create a dictionary to map channels to values
+            # Fetch the DMX address for this device
+            dmx_address = await self._fetch_dmx_address()
+            if dmx_address is None:
+                _LOGGER.warning(f"Cannot turn on {self.name}: DMX address unknown")
+                return
+                
+            _LOGGER.info(f"Turning ON {self.name} at DMX address {dmx_address}")
+
+            # Create a dictionary to map DMX addresses to values
             channel_values = {}  # Maps channel -> value
-            device_channels = {}  # Maps uid -> channel
-            snapshot_data = self.coordinator.data.get("snapshot_data", {})
             
-            # First, collect channel numbers for all devices
-            for dev in snapshot_data.get("presentDemands", []):
-                channel = dev.get("channel")
-                if channel is not None:
-                    try:
-                        channel_num = int(channel)
-                        device_channels[dev["uid"]] = channel_num
-                    except (ValueError, TypeError):
-                        _LOGGER.warning(f"Invalid channel value for device {dev['uid']}: {channel}")
-            
-            # Next, look up relay status for each device and set channel values accordingly
-            dmx_data = self.coordinator.data.get("dmx_data", {})  # Get DMX status data
-            
-            for dev in snapshot_data.get("presentDemands", []):
-                if dev["uid"] in device_channels:
-                    channel_num = device_channels[dev["uid"]]
-                    
-                    # For the device we're turning on, set to 255
-                    if dev["uid"] == self._device["uid"]:
-                        channel_values[channel_num] = "255"
-                    else:
-                        # For other devices, check relay status or fallback to percentCommanded
-                        if channel_num in dmx_data:
-                            # Use DMX status if available
-                            channel_values[channel_num] = "255" if dmx_data[channel_num] else "0"
-                        else:
-                            # Fallback to percentCommanded - assume ON if not available
-                            channel_values[channel_num] = "255" if dev.get("percentCommanded", 100) == 100 else "0"
+            # Set this device to ON (255)
+            channel_values[dmx_address] = "255"
             
             # Get IP address from config entry
             ip_address = self.coordinator.config_entry.data.get("address")
@@ -172,7 +207,7 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
                 self._last_commanded_state = True
                 self.async_write_ha_state()
             else:
-                _LOGGER.warning("Failed to send turn_on command to device %s", self._device["name"])
+                _LOGGER.warning(f"Failed to send turn_on command to {self.name} at address {dmx_address}")
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
@@ -199,39 +234,19 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         if self.is_on:
             _last_command_time = now  # Set cooldown timer only when actually proceeding
 
-            # Create a dictionary to map channels to values
+            # Fetch the DMX address for this device
+            dmx_address = await self._fetch_dmx_address()
+            if dmx_address is None:
+                _LOGGER.warning(f"Cannot turn off {self.name}: DMX address unknown")
+                return
+                
+            _LOGGER.info(f"Turning OFF {self.name} at DMX address {dmx_address}")
+
+            # Create a dictionary to map DMX addresses to values
             channel_values = {}  # Maps channel -> value
-            device_channels = {}  # Maps uid -> channel
-            snapshot_data = self.coordinator.data.get("snapshot_data", {})
             
-            # First, collect channel numbers for all devices
-            for dev in snapshot_data.get("presentDemands", []):
-                channel = dev.get("channel")
-                if channel is not None:
-                    try:
-                        channel_num = int(channel)
-                        device_channels[dev["uid"]] = channel_num
-                    except (ValueError, TypeError):
-                        _LOGGER.warning(f"Invalid channel value for device {dev['uid']}: {channel}")
-            
-            # Next, look up relay status for each device and set channel values accordingly
-            dmx_data = self.coordinator.data.get("dmx_data", {})  # Get DMX status data
-            
-            for dev in snapshot_data.get("presentDemands", []):
-                if dev["uid"] in device_channels:
-                    channel_num = device_channels[dev["uid"]]
-                    
-                    # For the device we're turning off, set to 0
-                    if dev["uid"] == self._device["uid"]:
-                        channel_values[channel_num] = "0"
-                    else:
-                        # For other devices, check relay status or fallback to percentCommanded
-                        if channel_num in dmx_data:
-                            # Use DMX status if available
-                            channel_values[channel_num] = "255" if dmx_data[channel_num] else "0"
-                        else:
-                            # Fallback to percentCommanded - assume ON if not available
-                            channel_values[channel_num] = "255" if dev.get("percentCommanded", 100) == 100 else "0"
+            # Set this device to OFF (0)
+            channel_values[dmx_address] = "0"
             
             # Get IP address from config entry
             ip_address = self.coordinator.config_entry.data.get("address")
@@ -250,11 +265,12 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
                 self._last_commanded_state = False
                 self.async_write_ha_state()
             else:
-                _LOGGER.warning("Failed to send turn_off command to device %s", self._device["name"])
+                _LOGGER.warning(f"Failed to send turn_off command to {self.name} at address {dmx_address}")
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
+        # Always use presentDemand for state updates
         new_state = self._get_percent_commanded_state()
 
         # Only process state changes
@@ -275,7 +291,7 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
                 self._attr_is_on = self._last_commanded_state
                 self.async_write_ha_state()
             else:
-                # No cooldown, accept the state change
+                # No cooldown, accept the state change from presentDemands data
                 self._attr_is_on = new_state
                 self._last_commanded_state = new_state
                 self.async_write_ha_state()

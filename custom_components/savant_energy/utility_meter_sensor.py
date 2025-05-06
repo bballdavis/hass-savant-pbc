@@ -24,7 +24,7 @@ RESET_YEARLY = "yearly"
 
 
 class EnhancedUtilityMeterSensor(RestoreEntity):
-    """Energy meter sensor with daily, monthly, and yearly usage (primary) attributes."""
+    """Energy meter sensor with daily, monthly, yearly, and lifetime usage attributes."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
@@ -47,12 +47,18 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
         self._attr_device_info = device_info
 
         # Initialize all counters to zero
+        self._lifetime_usage = 0.0  # Never resets
         self._yearly_usage = 0.0
-        self._attr_native_value = 0.0  # Explicitly set native_value
-        self._daily_usage = 0.0
         self._monthly_usage = 0.0
+        self._daily_usage = 0.0
 
-        self._last_reset = dt_util.utcnow()
+        self._attr_native_value = 0.0  # Explicitly set native_value
+
+        self._last_reset = dt_util.utcnow()  # For legacy compatibility
+        self._last_yearly_reset = dt_util.now().replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        self._last_monthly_reset = dt_util.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        self._last_daily_reset = dt_util.start_of_local_day(dt_util.now())
+
         self._last_power = None
         self._last_update = None
 
@@ -66,61 +72,75 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
         # Restore previous state if available
         last_state = await self.async_get_last_state()
         if last_state is not None:
-            # Restore the main yearly usage from the state value
+            # Restore the main lifetime usage from the state value
             try:
-                self._yearly_usage = (
+                self._lifetime_usage = (
                     float(last_state.state)
                     if last_state.state not in (None, "unknown", "unavailable")
                     else 0.0
                 )
-                self._attr_native_value = (
-                    self._yearly_usage
-                )  # Set native_value directly
+                self._attr_native_value = self._lifetime_usage
             except (ValueError, TypeError):
-                self._yearly_usage = 0.0
+                self._lifetime_usage = 0.0
                 self._attr_native_value = 0.0
 
             # Restore attributes if available
-            if "daily_usage_kwh" in last_state.attributes:
-                try:
-                    self._daily_usage = float(last_state.attributes["daily_usage_kwh"])
-                except (ValueError, TypeError):
-                    self._daily_usage = 0.0
-            elif "daily_usage" in last_state.attributes:
+            if "daily_usage" in last_state.attributes:
                 try:
                     self._daily_usage = float(last_state.attributes["daily_usage"])
                 except (ValueError, TypeError):
                     self._daily_usage = 0.0
 
-            if "monthly_usage_kwh" in last_state.attributes:
-                try:
-                    self._monthly_usage = float(
-                        last_state.attributes["monthly_usage_kwh"]
-                    )
-                except (ValueError, TypeError):
-                    self._monthly_usage = 0.0
-            elif "monthly_usage" in last_state.attributes:
+            if "monthly_usage" in last_state.attributes:
                 try:
                     self._monthly_usage = float(last_state.attributes["monthly_usage"])
                 except (ValueError, TypeError):
                     self._monthly_usage = 0.0
 
-            if "last_reset" in last_state.attributes:
+            if "yearly_usage" in last_state.attributes:
                 try:
-                    self._last_reset = dt_util.parse_datetime(
-                        last_state.attributes["last_reset"]
-                    )
+                    self._yearly_usage = float(last_state.attributes["yearly_usage"])
                 except (ValueError, TypeError):
-                    self._last_reset = dt_util.utcnow()
+                    self._yearly_usage = 0.0
+
+            if "last_daily_reset" in last_state.attributes:
+                try:
+                    self._last_daily_reset = dt_util.parse_datetime(
+                        last_state.attributes["last_daily_reset"]
+                    )
+                except Exception:
+                    self._last_daily_reset = dt_util.start_of_local_day(dt_util.now())
+            else:
+                self._last_daily_reset = dt_util.start_of_local_day(dt_util.now())
+
+            if "last_monthly_reset" in last_state.attributes:
+                try:
+                    self._last_monthly_reset = dt_util.parse_datetime(
+                        last_state.attributes["last_monthly_reset"]
+                    )
+                except Exception:
+                    self._last_monthly_reset = dt_util.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            else:
+                self._last_monthly_reset = dt_util.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            if "last_yearly_reset" in last_state.attributes:
+                try:
+                    self._last_yearly_reset = dt_util.parse_datetime(
+                        last_state.attributes["last_yearly_reset"]
+                    )
+                except Exception:
+                    self._last_yearly_reset = dt_util.now().replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            else:
+                self._last_yearly_reset = dt_util.now().replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
 
         current_state = self.hass.states.get(self._source_entity)
         if not last_state and (
             current_state is None or current_state.state in ("unknown", "unavailable")
         ):
             # If there's no previous sensor state and source entity is unknown,
-            # explicitly set the yearly usage to avoid "unknown" display
-            self._yearly_usage = 0.0
-            self._attr_native_value = 0.0  # Set native_value directly
+            # explicitly set the lifetime usage to avoid "unknown" display
+            self._lifetime_usage = 0.0
+            self._attr_native_value = 0.0
             self.async_write_ha_state()
 
         # Track the source entity
@@ -148,12 +168,30 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
                 avg_power = (old_power + new_power) / 2
                 energy_kwh = avg_power * time_diff / 1000
 
-                self._yearly_usage += energy_kwh
-                self._daily_usage += energy_kwh
-                self._monthly_usage += energy_kwh
-                self._attr_native_value = round(
-                    self._yearly_usage, 1
-                )  # Changed from 3 to 1
+                self._lifetime_usage += energy_kwh
+
+                # Only accumulate yearly usage if after last yearly reset
+                if self._last_update >= self._last_yearly_reset:
+                    self._yearly_usage += energy_kwh
+                else:
+                    self._yearly_usage = energy_kwh
+                    self._last_yearly_reset = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+                # Only accumulate monthly usage if after last monthly reset
+                if self._last_update >= self._last_monthly_reset:
+                    self._monthly_usage += energy_kwh
+                else:
+                    self._monthly_usage = energy_kwh
+                    self._last_monthly_reset = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+                # Only accumulate daily usage if after last daily reset
+                if self._last_update >= self._last_daily_reset:
+                    self._daily_usage += energy_kwh
+                else:
+                    self._daily_usage = energy_kwh
+                    self._last_daily_reset = dt_util.start_of_local_day(now)
+
+                self._attr_native_value = round(self._lifetime_usage, 1)
                 self.async_write_ha_state()
 
             self._last_power = new_power
@@ -165,6 +203,7 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
             """Reset daily usage at midnight."""
             _LOGGER.debug("Resetting daily energy usage for %s", self.name)
             self._daily_usage = 0.0
+            self._last_daily_reset = dt_util.start_of_local_day(now)
             self.async_write_ha_state()
 
             # Schedule next reset at midnight
@@ -180,6 +219,7 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
             """Reset monthly usage at the first day of month."""
             _LOGGER.debug("Resetting monthly energy usage for %s", self.name)
             self._monthly_usage = 0.0
+            self._last_monthly_reset = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             self.async_write_ha_state()
 
             # Schedule next reset for the first day of next month
@@ -199,10 +239,7 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
             """Reset the yearly usage at the beginning of the year."""
             _LOGGER.debug("Resetting yearly energy usage for %s", self.name)
             self._yearly_usage = 0.0
-            self._attr_native_value = 0.0  # Reset native_value directly
-            self._daily_usage = 0.0
-            self._monthly_usage = 0.0
-            self._last_reset = dt_util.utcnow()
+            self._last_yearly_reset = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
             self.async_write_ha_state()
 
             # Schedule next reset for January 1st of next year
@@ -251,10 +288,7 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
             async_source_state_changed(self._source_entity, None, current_state)
 
         # Make sure we write the current state to avoid "unknown" display
-        self._attr_native_value = round(
-            self._yearly_usage,
-            1,  # Changed from 3 to 1
-        )  # Set explicitly before writing
+        self._attr_native_value = round(self._lifetime_usage, 1)
         self.async_write_ha_state()
 
     async def async_will_remove_from_hass(self):
@@ -266,8 +300,8 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
 
     @property
     def native_value(self) -> float:
-        """Return the yearly energy usage in kWh."""
-        return round(self._yearly_usage or 0.0, 1)  # Changed from 3 to 1
+        """Return the lifetime energy usage in kWh."""
+        return round(self._lifetime_usage or 0.0, 1)
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -289,13 +323,20 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
             ),
-            "last_reset": self._last_reset.isoformat(),
+            "lifetime_usage": float(
+                Decimal(str(self._lifetime_usage)).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+            ),
+            "last_daily_reset": self._last_daily_reset.isoformat() if self._last_daily_reset else None,
+            "last_monthly_reset": self._last_monthly_reset.isoformat() if self._last_monthly_reset else None,
+            "last_yearly_reset": self._last_yearly_reset.isoformat() if self._last_yearly_reset else None,
         }
 
     @property
     def state(self):
         """Return the state of the entity."""
-        return round(self._yearly_usage, 1)  # Changed from 3 to 1
+        return round(self._lifetime_usage, 1)
 
     @property
     def available(self) -> bool:

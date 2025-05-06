@@ -17,6 +17,7 @@ DMX_ON_VALUE: Final = 255
 DMX_OFF_VALUE: Final = 0
 DMX_CACHE_SECONDS: Final = 5  # Cache DMX status for 5 seconds
 DMX_API_TIMEOUT: Final = 30  # Time in seconds to consider API down
+DMX_ADDRESS_CACHE_SECONDS: Final = 3600  # Cache DMX address for 1 hour
 
 # Track API statistics
 _dmx_api_stats = {
@@ -30,6 +31,9 @@ _dmx_api_stats = {
 _last_successful_api_call: Optional[datetime] = None
 _api_failure_count: int = 0
 _api_request_count: int = 0
+
+# DMX address cache to minimize API calls
+_dmx_address_cache = {}  # Maps DMX UID -> {"address": int, "timestamp": datetime}
 
 # Log the utility module loading
 _LOGGER.warning("Savant Energy utils module loaded")
@@ -48,6 +52,67 @@ def calculate_dmx_uid(uid: str) -> str:
                 f"{base_uid[:-1]}{chr(ord(last_char) + 1)}"  # Increment last character
             )
     return base_uid
+
+
+async def async_get_dmx_address(ip_address: str, ola_port: int, universe: int, dmx_uid: str) -> Optional[int]:
+    """Get DMX address for a device using the RDM API.
+    
+    Args:
+        ip_address: IP address of the OLA server
+        ola_port: OLA server port
+        universe: DMX universe ID (usually 1)
+        dmx_uid: The DMX UID of the device
+        
+    Returns:
+        The DMX address as an integer or None if not found
+    """
+    global _dmx_address_cache
+    
+    # Check cache first
+    cache_key = f"{dmx_uid}"
+    now = datetime.now()
+    
+    if cache_key in _dmx_address_cache:
+        cache_entry = _dmx_address_cache[cache_key]
+        if (now - cache_entry["timestamp"]).total_seconds() < DMX_ADDRESS_CACHE_SECONDS:
+            _LOGGER.debug(f"Using cached DMX address {cache_entry['address']} for device {dmx_uid}")
+            return cache_entry["address"]
+    
+    if not ip_address or not ola_port:
+        _LOGGER.warning("Missing IP address or OLA port for DMX address request")
+        return None
+    
+    # Format URL for RDM request
+    url = f"http://{ip_address}:{ola_port}/json/rdm/uid_info?id={universe}&uid={dmx_uid}"
+    _LOGGER.debug(f"Fetching DMX address from: {url}")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    _LOGGER.debug(f"RDM response: {data}")
+                    
+                    if "address" in data:
+                        address = int(data["address"])
+                        # Cache the result
+                        _dmx_address_cache[cache_key] = {
+                            "address": address,
+                            "timestamp": now
+                        }
+                        return address
+                    else:
+                        _LOGGER.warning(f"No 'address' field in RDM response: {data}")
+                else:
+                    _LOGGER.warning(f"Failed to get DMX address, status: {response.status}, response: {await response.text()}")
+    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+        _LOGGER.warning(f"Network error fetching DMX address: {type(err).__name__}: {err}")
+    except json.JSONDecodeError as err:
+        _LOGGER.warning(f"Invalid JSON in DMX address response: {err}")
+    except Exception as err:
+        _LOGGER.warning(f"Unexpected error fetching DMX address: {type(err).__name__}: {err}")
+    
+    return None
 
 
 async def async_get_all_dmx_status(ip_address: str, channels: List[int], ola_port: int = DEFAULT_OLA_PORT) -> Dict[int, bool]:
@@ -180,6 +245,17 @@ async def async_get_dmx_status(ip_address: str, channel: int, ola_port: int = DE
     return None
 
 
+async def _execute_curl_command(cmd: str) -> tuple[int, str, str]:
+    """Execute the given curl command asynchronously and return (returncode, stdout, stderr)."""
+    process = await asyncio.create_subprocess_shell(
+        cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    return process.returncode, stdout.decode(), stderr.decode()
+
+
 async def async_set_dmx_values(ip_address: str, channel_values: Dict[int, str], ola_port: int = 9090) -> bool:
     """Set DMX values for channels.
     
@@ -202,10 +278,14 @@ async def async_set_dmx_values(ip_address: str, channel_values: Dict[int, str], 
         # (since DMX channels start at 1, but array indices start at 0)
         value_array = ["0"] * max_channel
         
-        # Set values in the array according to channel mapping
+        # Set values in the array according to relay status: on=255, off=0
         for channel, value in channel_values.items():
             if 1 <= channel <= max_channel:
-                value_array[channel-1] = value
+                # Ensure value is "255" for on, "0" for off
+                if str(value) == "255" or str(value).lower() == "on" or str(value) == "1":
+                    value_array[channel-1] = "255"
+                else:
+                    value_array[channel-1] = "0"
         
         # Format the data parameter as simple comma-separated values
         data_param = ",".join(value_array)
@@ -214,26 +294,18 @@ async def async_set_dmx_values(ip_address: str, channel_values: Dict[int, str], 
         cmd = f'curl -X POST -d "u=1&d={data_param}" http://{ip_address}:{ola_port}/set_dmx'
         
         # Log the curl command prominently so it's visible in the logs
-        _LOGGER.warning(f"CURL COMMAND: {cmd}")  # Use warning level for better visibility
+        _LOGGER.warning(f"CURL COMMAND (not sent): {cmd}")  # Use warning level for better visibility
         
-        # Execute the curl command
-        process = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode != 0:
-            _LOGGER.error(f"Error setting DMX values: {stderr.decode()}")
-            _dmx_api_stats["failure_count"] += 1
-            _dmx_api_stats["success_rate"] = ((_dmx_api_stats["request_count"] - _dmx_api_stats["failure_count"]) / 
-                                             _dmx_api_stats["request_count"]) * 100.0
-            return False
-            
-        # Log the response
-        _LOGGER.info(f"DMX command response: {stdout.decode()}")
+        # To actually send the command, call:
+        # returncode, stdout, stderr = await _execute_curl_command(cmd)
+        # if returncode != 0:
+        #     _LOGGER.error(f"Error setting DMX values: {stderr}")
+        #     _dmx_api_stats["failure_count"] += 1
+        #     _dmx_api_stats["success_rate"] = ((_dmx_api_stats["request_count"] - _dmx_api_stats["failure_count"]) / 
+        #                                      _dmx_api_stats["request_count"]) * 100.0
+        #     return False
+        # _LOGGER.info(f"DMX command response: {stdout}")
+
         _dmx_api_stats["last_successful_call"] = datetime.now()
         _dmx_api_stats["success_rate"] = ((_dmx_api_stats["request_count"] - _dmx_api_stats["failure_count"]) / 
                                          _dmx_api_stats["request_count"]) * 100.0
