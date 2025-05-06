@@ -33,6 +33,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             demands_str,
             len(demands_str),
         )
+        utility_meter_sensors = []
         for device in snapshot_data["presentDemands"]:
             uid = device["uid"]
             dmx_uid = calculate_dmx_uid(uid)
@@ -76,43 +77,24 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     dmx_uid,
                 )
             )
+
+            # Predictable entity_id for the power sensor
+            power_entity_id = f"sensor.savantenergy_{uid}_power"
+            utility_meter_sensors.append(
+                EnhancedUtilityMeterSensor(
+                    hass,
+                    power_entity_id,
+                    "Energy",
+                    f"SavantEnergy_{uid}_energy",
+                    device_info,
+                )
+            )
+
+        # Add all entities at once
+        async_add_entities(entities + utility_meter_sensors)
+        _LOGGER.debug("Added %d sensor entities (including utility meters)", len(entities + utility_meter_sensors))
     else:
         _LOGGER.debug("No presentDemands data found in coordinator")
-
-    # Add all entities first to ensure they get entity_ids assigned
-    async_add_entities(entities)
-    _LOGGER.debug("Added %d sensor entities", len(entities))
-
-    # Create enhanced utility meter sensors
-    utility_meter_sensors = []
-
-    for power_sensor in power_sensors:
-        if not power_sensor.entity_id:
-            # Skip if entity_id isn't available yet
-            _LOGGER.warning(
-                "Power sensor %s has no entity_id yet, skipping meter creation",
-                power_sensor.name,
-            )
-            continue
-
-        device_name = power_sensor._device["name"]
-        uid = power_sensor._device["uid"]
-        device_info = power_sensor._attr_device_info
-
-        # Create a single enhanced utility meter that tracks all periods
-        utility_meter_sensors.append(
-            EnhancedUtilityMeterSensor(
-                hass,
-                power_sensor.entity_id,
-                "Energy",  # Use a short label to avoid duplicated device name
-                f"SavantEnergy_{uid}_energy",
-                device_info,
-            )
-        )
-
-    if utility_meter_sensors:
-        async_add_entities(utility_meter_sensors)
-        _LOGGER.debug("Added %d utility meter sensors", len(utility_meter_sensors))
 
 
 class DMXAddressSensor(CoordinatorEntity, SensorEntity):

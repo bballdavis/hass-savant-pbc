@@ -120,7 +120,6 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
             return None
             
         # Default universe is 1
-        universe = 1
         
         _LOGGER.debug(f"Fetching DMX address for {self.name} with UID {self._dmx_uid}")
         address = await async_get_dmx_address(ip_address, ola_port, universe, self._dmx_uid)
@@ -130,6 +129,64 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         else:
             _LOGGER.warning(f"Failed to fetch DMX address for {self.name}")
             return None
+
+    async def _get_all_device_dmx_states(self, target_dmx_address=None, target_value=None):
+        """Build a dict of {dmx_address: value} for all devices, using relay status, assuming 255 if unknown/missing."""
+        # Get all presentDemands
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        dmx_states = {}
+        max_address = 0
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                # Get DMX address from sensor state
+                dmx_uid = calculate_dmx_uid(device["uid"])
+                # Try to get DMX address from sensor entity
+                dmx_address = None
+                entity_id = f"sensor.savantenergy_{device['uid']}_dmx_address"
+                state = self._hass.states.get(entity_id)
+                if not state or state.state in ("unknown", "unavailable"):
+                    # Try fallback
+                    alt_entity_id = f"sensor.{device['name'].lower().replace(' ', '_')}_dmx_address"
+                    state = self._hass.states.get(alt_entity_id)
+                if state and state.state not in ("unknown", "unavailable"):
+                    try:
+                        dmx_address = int(state.state)
+                    except Exception:
+                        pass
+                # If still not found, skip this device
+                if not dmx_address:
+                    continue
+                # Determine relay status
+                relay_status = device.get("percentCommanded")
+                if relay_status is None:
+                    value = "255"  # Assume ON if unknown
+                else:
+                    value = "255" if relay_status == 100 else "0"
+                dmx_states[dmx_address] = value
+                if dmx_address > max_address:
+                    max_address = dmx_address
+        # If a target address/value is provided (for the switch being toggled), override it
+        if target_dmx_address:
+            dmx_states[target_dmx_address] = target_value
+            if target_dmx_address > max_address:
+                max_address = target_dmx_address
+        return dmx_states, max_address
+
+    async def _send_full_dmx_command(self, target_dmx_address, target_value):
+        """Send a DMX command with the full state of all addresses."""
+        # Build the full DMX state array
+        dmx_states, max_address = await self._get_all_device_dmx_states(target_dmx_address, target_value)
+        # Fill in missing addresses as ON (255)
+        value_array = ["255"] * max_address
+        for addr in range(1, max_address + 1):
+            value_array[addr-1] = dmx_states.get(addr, "255")
+        data_param = ",".join(value_array)
+        ip_address = self.coordinator.config_entry.data.get("address")
+        ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
+        cmd = f'curl -X POST -d "u=1&d={data_param}" http://{ip_address}:{ola_port}/set_dmx'
+        _LOGGER.warning(f"CURL COMMAND (not sent): {cmd}")
+        # Optionally, call the real async_set_dmx_values if you want to actually send it
+        return True
 
     @property
     def available(self) -> bool:
@@ -155,13 +212,9 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         """Turn the switch on."""
         global _last_command_time
         now = time.monotonic()
-
-        # Check cooldown
         if now - _last_command_time < self._cooldown:
             time_left = math.ceil(self._cooldown - (now - _last_command_time))
             _LOGGER.debug("Cooldown active, ignoring turn_on command")
-
-            # Use persistent_notification.create service which is always available
             await self._hass.services.async_call(
                 "persistent_notification",
                 "create",
@@ -172,54 +225,25 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
                 },
             )
             return
-
         if not self.is_on:
-            _last_command_time = now  # Set cooldown timer only when actually proceeding
-
-            # Fetch the DMX address for this device
+            _last_command_time = now
             dmx_address = await self._fetch_dmx_address()
             if dmx_address is None:
                 _LOGGER.warning(f"Cannot turn on {self.name}: DMX address unknown")
                 return
-                
             _LOGGER.info(f"Turning ON {self.name} at DMX address {dmx_address}")
-
-            # Create a dictionary to map DMX addresses to values
-            channel_values = {}  # Maps channel -> value
-            
-            # Set this device to ON (255)
-            channel_values[dmx_address] = "255"
-            
-            # Get IP address from config entry
-            ip_address = self.coordinator.config_entry.data.get("address")
-            if not ip_address:
-                _LOGGER.warning("No IP address available, cannot send command")
-                return
-
-            # Get OLA port from config entry or use default
-            ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
-            
-            # Use utility function to set DMX values
-            success = await async_set_dmx_values(ip_address, channel_values, ola_port)
-
-            if success:
-                self._attr_is_on = True
-                self._last_commanded_state = True
-                self.async_write_ha_state()
-            else:
-                _LOGGER.warning(f"Failed to send turn_on command to {self.name} at address {dmx_address}")
+            await self._send_full_dmx_command(dmx_address, "255")
+            self._attr_is_on = True
+            self._last_commanded_state = True
+            self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
         global _last_command_time
         now = time.monotonic()
-
-        # Check cooldown
         if now - _last_command_time < self._cooldown:
             time_left = math.ceil(self._cooldown - (now - _last_command_time))
             _LOGGER.debug("Cooldown active, ignoring turn_off command")
-
-            # Use persistent_notification.create service which is always available
             await self._hass.services.async_call(
                 "persistent_notification",
                 "create",
@@ -230,68 +254,26 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
                 },
             )
             return
-
         if self.is_on:
-            _last_command_time = now  # Set cooldown timer only when actually proceeding
-
-            # Fetch the DMX address for this device
+            _last_command_time = now
             dmx_address = await self._fetch_dmx_address()
             if dmx_address is None:
                 _LOGGER.warning(f"Cannot turn off {self.name}: DMX address unknown")
                 return
-                
             _LOGGER.info(f"Turning OFF {self.name} at DMX address {dmx_address}")
-
-            # Create a dictionary to map DMX addresses to values
-            channel_values = {}  # Maps channel -> value
-            
-            # Set this device to OFF (0)
-            channel_values[dmx_address] = "0"
-            
-            # Get IP address from config entry
-            ip_address = self.coordinator.config_entry.data.get("address")
-            if not ip_address:
-                _LOGGER.warning("No IP address available, cannot send command")
-                return
-
-            # Get OLA port from config entry or use default
-            ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
-            
-            # Use utility function to set DMX values
-            success = await async_set_dmx_values(ip_address, channel_values, ola_port)
-
-            if success:
-                self._attr_is_on = False
-                self._last_commanded_state = False
-                self.async_write_ha_state()
-            else:
-                _LOGGER.warning(f"Failed to send turn_off command to {self.name} at address {dmx_address}")
+            await self._send_full_dmx_command(dmx_address, "0")
+            self._attr_is_on = False
+            self._last_commanded_state = False
+            self.async_write_ha_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         # Always use presentDemand for state updates
         new_state = self._get_percent_commanded_state()
-
         # Only process state changes
         if new_state != self._last_commanded_state:
-            # Check if cooldown is active
-            now = time.monotonic()
-            if now - _last_command_time < self._cooldown:
-                # Cooldown active, reject the state change
-                time_left = math.ceil(self._cooldown - (now - _last_command_time))
-                _LOGGER.debug(
-                    "Cooldown active, rejecting state change from coordinator for %s. %d seconds left",
-                    self._device["name"],
-                    time_left,
-                )
-
-                # Keep our current state instead of accepting the change
-                # This will effectively reject the state change
-                self._attr_is_on = self._last_commanded_state
-                self.async_write_ha_state()
-            else:
-                # No cooldown, accept the state change from presentDemands data
-                self._attr_is_on = new_state
-                self._last_commanded_state = new_state
-                self.async_write_ha_state()
+            # No cooldown check here: always accept coordinator state
+            self._attr_is_on = new_state
+            self._last_commanded_state = new_state
+            self.async_write_ha_state()

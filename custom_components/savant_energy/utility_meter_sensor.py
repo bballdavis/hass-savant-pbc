@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict
 from decimal import Decimal, ROUND_HALF_UP
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, Entity
@@ -23,7 +23,7 @@ RESET_MONTHLY = "monthly"
 RESET_YEARLY = "yearly"
 
 
-class EnhancedUtilityMeterSensor(RestoreEntity):
+class EnhancedUtilityMeterSensor(RestoreEntity, SensorEntity):
     """Energy meter sensor with daily, monthly, yearly, and lifetime usage attributes."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
@@ -103,35 +103,46 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
                 except (ValueError, TypeError):
                     self._yearly_usage = 0.0
 
+            # Restore last reset datetimes robustly
+            now = dt_util.now()
+            today = dt_util.start_of_local_day(now)
+            first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            first_of_year = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
             if "last_daily_reset" in last_state.attributes:
                 try:
-                    self._last_daily_reset = dt_util.parse_datetime(
-                        last_state.attributes["last_daily_reset"]
-                    )
+                    self._last_daily_reset = dt_util.parse_datetime(last_state.attributes["last_daily_reset"])
                 except Exception:
-                    self._last_daily_reset = dt_util.start_of_local_day(dt_util.now())
+                    self._last_daily_reset = today
             else:
-                self._last_daily_reset = dt_util.start_of_local_day(dt_util.now())
+                self._last_daily_reset = today
 
             if "last_monthly_reset" in last_state.attributes:
                 try:
-                    self._last_monthly_reset = dt_util.parse_datetime(
-                        last_state.attributes["last_monthly_reset"]
-                    )
+                    self._last_monthly_reset = dt_util.parse_datetime(last_state.attributes["last_monthly_reset"])
                 except Exception:
-                    self._last_monthly_reset = dt_util.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                    self._last_monthly_reset = first_of_month
             else:
-                self._last_monthly_reset = dt_util.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                self._last_monthly_reset = first_of_month
 
             if "last_yearly_reset" in last_state.attributes:
                 try:
-                    self._last_yearly_reset = dt_util.parse_datetime(
-                        last_state.attributes["last_yearly_reset"]
-                    )
+                    self._last_yearly_reset = dt_util.parse_datetime(last_state.attributes["last_yearly_reset"])
                 except Exception:
-                    self._last_yearly_reset = dt_util.now().replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+                    self._last_yearly_reset = first_of_year
             else:
-                self._last_yearly_reset = dt_util.now().replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+                self._last_yearly_reset = first_of_year
+
+            # Only reset usage if the period has actually changed
+            if self._last_daily_reset is None or self._last_daily_reset < today:
+                self._daily_usage = 0.0
+                self._last_daily_reset = today
+            if self._last_monthly_reset is None or self._last_monthly_reset < first_of_month:
+                self._monthly_usage = 0.0
+                self._last_monthly_reset = first_of_month
+            if self._last_yearly_reset is None or self._last_yearly_reset < first_of_year:
+                self._yearly_usage = 0.0
+                self._last_yearly_reset = first_of_year
 
         current_state = self.hass.states.get(self._source_entity)
         if not last_state and (
@@ -142,6 +153,22 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
             self._lifetime_usage = 0.0
             self._attr_native_value = 0.0
             self.async_write_ha_state()
+
+        # After restoring state, check and correct reset dates/values if the period has actually expired
+        now = dt_util.now()
+        today = dt_util.start_of_local_day(now)
+        if self._last_daily_reset is None or self._last_daily_reset < today:
+            self._daily_usage = 0.0
+            self._last_daily_reset = today
+        first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if self._last_monthly_reset is None or self._last_monthly_reset < first_of_month:
+            self._monthly_usage = 0.0
+            self._last_monthly_reset = first_of_month
+        first_of_year = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        if self._last_yearly_reset is None or self._last_yearly_reset < first_of_year:
+            self._yearly_usage = 0.0
+            self._last_yearly_reset = first_of_year
+        self.async_write_ha_state()
 
         # Track the source entity
         @callback
@@ -168,30 +195,62 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
                 avg_power = (old_power + new_power) / 2
                 energy_kwh = avg_power * time_diff / 1000
 
+                # Don't allow negative energy values
+                if energy_kwh < 0:
+                    _LOGGER.warning("Negative energy calculated (%f kWh) - ignoring", energy_kwh)
+                    energy_kwh = 0
+
+                # Log current measurements and accumulation for debugging
+                _LOGGER.debug(
+                    "%s: Power: %.2fW, Time: %.4f hours, Energy: %.6f kWh, "
+                    "Daily: %.4f → %.4f, Monthly: %.4f → %.4f",
+                    self.name, new_power, time_diff, energy_kwh, 
+                    self._daily_usage, self._daily_usage + energy_kwh,
+                    self._monthly_usage, self._monthly_usage + energy_kwh
+                )
+
                 self._lifetime_usage += energy_kwh
 
-                # Only accumulate yearly usage if after last yearly reset
-                if self._last_update >= self._last_yearly_reset:
+                # For yearly, monthly, and daily, always check if we need to reset first
+                # before accumulating new energy values
+                now_local = dt_util.now()
+                today = dt_util.start_of_local_day(now_local)
+                first_of_month = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                first_of_year = now_local.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+                # Check for period changes and reset if needed
+                if self._last_yearly_reset is None or self._last_yearly_reset < first_of_year:
+                    _LOGGER.info("%s: Yearly period changed, resetting yearly usage", self.name)
+                    self._yearly_usage = energy_kwh  # Start fresh with current energy
+                    self._last_yearly_reset = first_of_year
+                else:
                     self._yearly_usage += energy_kwh
+                
+                if self._last_monthly_reset is None or self._last_monthly_reset < first_of_month:
+                    _LOGGER.info("%s: Monthly period changed, resetting monthly usage", self.name)
+                    self._monthly_usage = energy_kwh  # Start fresh with current energy
+                    self._last_monthly_reset = first_of_month
                 else:
-                    self._yearly_usage = energy_kwh
-                    self._last_yearly_reset = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-
-                # Only accumulate monthly usage if after last monthly reset
-                if self._last_update >= self._last_monthly_reset:
                     self._monthly_usage += energy_kwh
+                
+                if self._last_daily_reset is None or self._last_daily_reset < today:
+                    _LOGGER.info("%s: Daily period changed, resetting daily usage", self.name)
+                    self._daily_usage = energy_kwh  # Start fresh with current energy
+                    self._last_daily_reset = today
                 else:
-                    self._monthly_usage = energy_kwh
-                    self._last_monthly_reset = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-                # Only accumulate daily usage if after last daily reset
-                if self._last_update >= self._last_daily_reset:
                     self._daily_usage += energy_kwh
-                else:
-                    self._daily_usage = energy_kwh
-                    self._last_daily_reset = dt_util.start_of_local_day(now)
 
                 self._attr_native_value = round(self._lifetime_usage, 1)
+                
+                # Log a summary of current values at INFO level periodically
+                if self._lifetime_usage % 1.0 < energy_kwh:  # Log approximately every kWh
+                    _LOGGER.info(
+                        "%s: Current usage - Daily: %.4f kWh, Monthly: %.4f kWh, "
+                        "Yearly: %.4f kWh, Lifetime: %.4f kWh",
+                        self.name, self._daily_usage, self._monthly_usage, 
+                        self._yearly_usage, self._lifetime_usage
+                    )
+                
                 self.async_write_ha_state()
 
             self._last_power = new_power
@@ -305,29 +364,13 @@ class EnhancedUtilityMeterSensor(RestoreEntity):
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        """Return entity specific state attributes."""
-        # Ensure consistent decimal precision with proper float values
+        """Return entity specific state attributes with consistent precision and up-to-date reset dates."""
+        # All usage values rounded to one decimal place for consistency
         return {
-            "daily_usage": float(
-                Decimal(str(self._daily_usage)).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-            ),
-            "monthly_usage": float(
-                Decimal(str(self._monthly_usage)).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-            ),
-            "yearly_usage": float(
-                Decimal(str(self._yearly_usage)).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-            ),
-            "lifetime_usage": float(
-                Decimal(str(self._lifetime_usage)).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-            ),
+            "daily_usage": round(self._daily_usage or 0.0, 1),
+            "monthly_usage": round(self._monthly_usage or 0.0, 1),
+            "yearly_usage": round(self._yearly_usage or 0.0, 1),
+            "lifetime_usage": round(self._lifetime_usage or 0.0, 1),
             "last_daily_reset": self._last_daily_reset.isoformat() if self._last_daily_reset else None,
             "last_monthly_reset": self._last_monthly_reset.isoformat() if self._last_monthly_reset else None,
             "last_yearly_reset": self._last_yearly_reset.isoformat() if self._last_yearly_reset else None,

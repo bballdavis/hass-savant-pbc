@@ -40,17 +40,19 @@ _LOGGER.warning("Savant Energy utils module loaded")
 
 
 def calculate_dmx_uid(uid: str) -> str:
-    """Calculate the DMX UID based on the device UID."""
+    """Calculate the DMX UID based on the device UID, incrementing as hex if needed."""
     base_uid = uid.split(".")[0]
-    base_uid = f"{base_uid[:4]}:{base_uid[4:]}"  # Ensure proper formatting
+    # Format as XXXX:YYYYYY
+    base_uid = f"{base_uid[:4]}:{base_uid[4:]}"
     if uid.endswith(".1"):
-        last_char = base_uid[-1]
-        if last_char == "9":
-            base_uid = f"{base_uid[:-1]}A"  # Convert 9 to A
-        else:
-            base_uid = (
-                f"{base_uid[:-1]}{chr(ord(last_char) + 1)}"  # Increment last character
-            )
+        # Increment the last 2 hex digits as a hex number
+        prefix = base_uid[:-2]
+        last_two = base_uid[-2:]
+        try:
+            incremented = f"{int(last_two, 16) + 1:02X}"
+        except Exception:
+            incremented = last_two  # fallback, shouldn't happen
+        base_uid = prefix + incremented
     return base_uid
 
 
@@ -90,19 +92,27 @@ async def async_get_dmx_address(ip_address: str, ola_port: int, universe: int, d
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    _LOGGER.debug(f"RDM response: {data}")
+                    # Get response as text since we need to parse it manually
+                    text_response = await response.text()
+                    _LOGGER.debug(f"RDM raw text response: {text_response}")
                     
-                    if "address" in data:
-                        address = int(data["address"])
-                        # Cache the result
-                        _dmx_address_cache[cache_key] = {
-                            "address": address,
-                            "timestamp": now
-                        }
-                        return address
-                    else:
-                        _LOGGER.warning(f"No 'address' field in RDM response: {data}")
+                    try:
+                        # Parse the text response as JSON
+                        data = json.loads(text_response)
+                        _LOGGER.debug(f"RDM parsed JSON response: {data}")
+                        
+                        if "address" in data:
+                            address = int(data["address"])
+                            # Cache the result
+                            _dmx_address_cache[cache_key] = {
+                                "address": address,
+                                "timestamp": now
+                            }
+                            return address
+                        else:
+                            _LOGGER.warning(f"No 'address' field in RDM response: {data}")
+                    except json.JSONDecodeError as json_err:
+                        _LOGGER.warning(f"Failed to parse JSON from response: {json_err}. Text: {text_response}")
                 else:
                     _LOGGER.warning(f"Failed to get DMX address, status: {response.status}, response: {await response.text()}")
     except (aiohttp.ClientError, asyncio.TimeoutError) as err:

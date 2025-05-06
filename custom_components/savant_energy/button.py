@@ -66,29 +66,52 @@ class SavantAllLoadsButton(ButtonEntity):
     async def async_press(self) -> None:
         """Handle the button press - send command to turn on all loads."""
         # Set all channels to ON (255)
-        channel_values = {}
+        dmx_values = {}
+        max_dmx_address = 0
         
-        # Try to determine actual count from data
+        # Try to determine actual count from DMX address sensors
         if self.coordinator.data and "presentDemands" in self.coordinator.data:
-            # Find all device channels
+            # Collect DMX addresses for all devices
             for device in self.coordinator.data["presentDemands"]:
-                if "channel" in device:
-                    try:
-                        channel = int(device["channel"])
-                        # Set the channel to "on"
-                        channel_values[channel] = "255"
-                    except (ValueError, TypeError):
-                        continue
+                device_uid = device["uid"]
+                device_name = device["name"]
+                
+                # Try to get DMX address from sensor entity
+                dmx_address = None
+                
+                # Try different entity_id patterns
+                entity_id_patterns = [
+                    f"sensor.{device_name.lower().replace(' ', '_')}_dmx_address",
+                    f"sensor.savantenergy_{device_uid}_dmx_address",
+                    f"sensor.savant_energy_{device_uid}_dmx_address"
+                ]
+                
+                for entity_id in entity_id_patterns:
+                    state = self.hass.states.get(entity_id)
+                    if state and state.state not in ("unknown", "unavailable"):
+                        try:
+                            dmx_address = int(state.state)
+                            # Set this DMX address to "on"
+                            dmx_values[dmx_address] = "255"
+                            if dmx_address > max_dmx_address:
+                                max_dmx_address = dmx_address
+                            _LOGGER.debug(f"Found DMX address {dmx_address} for device {device_name}")
+                            break
+                        except (ValueError, TypeError):
+                            continue
             
-            # If no valid channels found, create some defaults
-            if not channel_values:
-                # Default to handling channels 1-50
-                for ch in range(1, DEFAULT_CHANNEL_COUNT + 1):
-                    channel_values[ch] = "255"
+            # If no valid DMX addresses found, create some defaults
+            if not dmx_values:
+                _LOGGER.warning("No DMX addresses found, defaulting to addresses 1-%d", DEFAULT_CHANNEL_COUNT)
+                for addr in range(1, DEFAULT_CHANNEL_COUNT + 1):
+                    dmx_values[addr] = "255"
+                max_dmx_address = DEFAULT_CHANNEL_COUNT
         else:
-            # Default to handling channels 1-50
-            for ch in range(1, DEFAULT_CHANNEL_COUNT + 1):
-                channel_values[ch] = "255"
+            # Default to handling addresses 1-50
+            _LOGGER.warning("No presentDemands data found, defaulting to addresses 1-%d", DEFAULT_CHANNEL_COUNT)
+            for addr in range(1, DEFAULT_CHANNEL_COUNT + 1):
+                dmx_values[addr] = "255"
+            max_dmx_address = DEFAULT_CHANNEL_COUNT
 
         # Get IP address from config entry
         ip_address = self.coordinator.config_entry.data.get("address")
@@ -99,8 +122,10 @@ class SavantAllLoadsButton(ButtonEntity):
         # Get OLA port from config entry or use default
         ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
 
+        _LOGGER.info(f"Turning on all {len(dmx_values)} loads (max DMX address: {max_dmx_address})")
+        
         # Use utility function to send command
-        success = await async_set_dmx_values(ip_address, channel_values, ola_port)
+        success = await async_set_dmx_values(ip_address, dmx_values, ola_port)
         
         if success:
             _LOGGER.info("All loads turned on successfully")
@@ -146,34 +171,50 @@ class SavantApiCommandLogButton(ButtonEntity):
         ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
 
         # Example channel values to turn everything on
-        channel_values = {}
+        dmx_values = {}
+        max_dmx_address = 0
         
-        # Try to determine actual channels from data
+        # Try to determine actual DMX addresses from sensors
         if self.coordinator.data and "presentDemands" in self.coordinator.data:
+            # Collect DMX addresses for all devices
             for device in self.coordinator.data["presentDemands"]:
-                if "channel" in device:
-                    try:
-                        channel = int(device["channel"])
-                        channel_values[channel] = "255"
-                    except (ValueError, TypeError):
-                        continue
+                device_uid = device["uid"]
+                device_name = device["name"]
+                
+                # Try different entity_id patterns for DMX address sensors
+                entity_id_patterns = [
+                    f"sensor.{device_name.lower().replace(' ', '_')}_dmx_address",
+                    f"sensor.savantenergy_{device_uid}_dmx_address",
+                    f"sensor.savant_energy_{device_uid}_dmx_address"
+                ]
+                
+                for entity_id in entity_id_patterns:
+                    state = self.hass.states.get(entity_id)
+                    if state and state.state not in ("unknown", "unavailable"):
+                        try:
+                            dmx_address = int(state.state)
+                            # Set this DMX address to "on"
+                            dmx_values[dmx_address] = "255"
+                            if dmx_address > max_dmx_address:
+                                max_dmx_address = dmx_address
+                            break
+                        except (ValueError, TypeError):
+                            continue
         
-        # If no valid channels found, create some defaults
-        if not channel_values:
-            # Default to handling channels 1-50
-            for ch in range(1, DEFAULT_CHANNEL_COUNT + 1):
-                channel_values[ch] = "255"
+        # If no valid DMX addresses found, create some defaults
+        if not dmx_values or max_dmx_address == 0:
+            _LOGGER.warning("No DMX addresses found, defaulting to addresses 1-%d", DEFAULT_CHANNEL_COUNT)
+            for addr in range(1, DEFAULT_CHANNEL_COUNT + 1):
+                dmx_values[addr] = "255"
+            max_dmx_address = DEFAULT_CHANNEL_COUNT
         
-        # Find the maximum channel number
-        max_channel = max(channel_values.keys()) if channel_values else DEFAULT_CHANNEL_COUNT
-        
-        # Create array of values where index position corresponds to channel-1
-        value_array = ["0"] * max_channel
+        # Create array of values where index position corresponds to address-1
+        value_array = ["0"] * max_dmx_address
         
         # Set values in the array
-        for channel, value in channel_values.items():
-            if 1 <= channel <= max_channel:
-                value_array[channel-1] = value
+        for address, value in dmx_values.items():
+            if 1 <= address <= max_dmx_address:
+                value_array[address-1] = value
         
         # Format the data as simple comma-separated values
         data_param = ",".join(value_array)
