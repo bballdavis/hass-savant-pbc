@@ -34,29 +34,22 @@ CONFIG_SCHEMA = vol.Schema(
 class SavantEnergyCoordinator(DataUpdateCoordinator):
     """Coordinator for Savant Energy data updates."""
     
-    def __init__(self, hass: HomeAssistant, address: str, port: int, scan_interval: int):
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         """Initialize the coordinator."""
+        scan_interval = entry.options.get(
+            CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, 15)
+        )
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(seconds=scan_interval),
         )
-        self.address = address
-        self.port = port
-        self._config_entry = None
+        self.address = entry.data[CONF_ADDRESS]
+        self.port = entry.data[CONF_PORT]
+        self.config_entry = entry  # Store config entry directly
         self.dmx_data = {}  # Will contain mapping of channel -> status
         self.dmx_last_update = None
-
-    @property
-    def config_entry(self) -> ConfigEntry:
-        """Return the config entry."""
-        return self._config_entry
-    
-    @config_entry.setter
-    def config_entry(self, entry: ConfigEntry) -> None:
-        """Set the config entry."""
-        self._config_entry = entry
 
     async def _async_update_data(self):
         """Fetch data from API endpoints."""
@@ -75,7 +68,7 @@ class SavantEnergyCoordinator(DataUpdateCoordinator):
             # We no longer extract channels from snapshot data since we're using DMX addresses instead
             
             # Get OLA port from config entry or use default
-            ola_port = self.config_entry.data.get("ola_port", DEFAULT_OLA_PORT) if self.config_entry else DEFAULT_OLA_PORT
+            ola_port = self.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
             
             # Since we don't track channels anymore, we reset the dmx_data
             self.dmx_data = {}
@@ -90,14 +83,7 @@ class SavantEnergyCoordinator(DataUpdateCoordinator):
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Savant Energy from a config entry."""
-    address = entry.data[CONF_ADDRESS]
-    port = entry.data[CONF_PORT]
-    scan_interval = entry.options.get(
-        CONF_SCAN_INTERVAL, entry.data.get(CONF_SCAN_INTERVAL, 15)
-    )
-
-    coordinator = SavantEnergyCoordinator(hass, address, port, scan_interval)
-    coordinator.config_entry = entry  # Store config entry in coordinator
+    coordinator = SavantEnergyCoordinator(hass, entry)
     
     await coordinator.async_config_entry_first_refresh()
 

@@ -71,14 +71,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry):
         """Get the options flow for this handler."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle a option flow for Savant Energy."""
-
-    # The config_entry is now automatically available through parent class
-    # No need to manually assign it anymore
 
     async def async_step_init(self, user_input=None):
         """Handle options flow."""
@@ -91,7 +88,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_ADDRESS,
                 default=self.options.get(
                     CONF_ADDRESS,
-                    self.data.get(CONF_ADDRESS, ""),
+                    self.config_entry.data.get(CONF_ADDRESS, ""),
                 ),
             ): str,
             # Add JSON feed port to options
@@ -99,7 +96,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_PORT,
                 default=self.options.get(
                     CONF_PORT,
-                    self.data.get(CONF_PORT, 2000),
+                    self.config_entry.data.get(CONF_PORT, 2000),
                 ),
             ): int,
             # Add OLA port to options
@@ -107,21 +104,21 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_OLA_PORT,
                 default=self.options.get(
                     CONF_OLA_PORT,
-                    self.data.get(CONF_OLA_PORT, DEFAULT_OLA_PORT),
+                    self.config_entry.data.get(CONF_OLA_PORT, DEFAULT_OLA_PORT),
                 ),
             ): int,
             vol.Optional(
                 CONF_SCAN_INTERVAL,
                 default=self.options.get(
                     CONF_SCAN_INTERVAL,
-                    self.data.get(CONF_SCAN_INTERVAL, 15),
+                    self.config_entry.data.get(CONF_SCAN_INTERVAL, 15),
                 ),
             ): int,
             vol.Optional(
                 CONF_SWITCH_COOLDOWN,
                 default=self.options.get(
                     CONF_SWITCH_COOLDOWN,
-                    self.data.get(
+                    self.config_entry.data.get(
                         CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN
                     ),
                 ),
@@ -131,7 +128,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_DMX_TESTING_MODE,
                 default=self.options.get(
                     CONF_DMX_TESTING_MODE,
-                    self.data.get(CONF_DMX_TESTING_MODE, False),
+                    self.config_entry.data.get(CONF_DMX_TESTING_MODE, False),
                 ),
             ): bool,
         }
