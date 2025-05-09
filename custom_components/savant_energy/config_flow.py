@@ -86,7 +86,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             # Add IP address to options
             vol.Required(
                 CONF_ADDRESS,
-                default=self.options.get(
+                default=self.config_entry.options.get(
                     CONF_ADDRESS,
                     self.config_entry.data.get(CONF_ADDRESS, ""),
                 ),
@@ -94,7 +94,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             # Add JSON feed port to options
             vol.Required(
                 CONF_PORT,
-                default=self.options.get(
+                default=self.config_entry.options.get(
                     CONF_PORT,
                     self.config_entry.data.get(CONF_PORT, 2000),
                 ),
@@ -102,21 +102,21 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             # Add OLA port to options
             vol.Required(
                 CONF_OLA_PORT,
-                default=self.options.get(
+                default=self.config_entry.options.get(
                     CONF_OLA_PORT,
                     self.config_entry.data.get(CONF_OLA_PORT, DEFAULT_OLA_PORT),
                 ),
             ): int,
             vol.Optional(
                 CONF_SCAN_INTERVAL,
-                default=self.options.get(
+                default=self.config_entry.options.get(
                     CONF_SCAN_INTERVAL,
                     self.config_entry.data.get(CONF_SCAN_INTERVAL, 15),
                 ),
             ): int,
             vol.Optional(
                 CONF_SWITCH_COOLDOWN,
-                default=self.options.get(
+                default=self.config_entry.options.get(
                     CONF_SWITCH_COOLDOWN,
                     self.config_entry.data.get(
                         CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN
@@ -126,7 +126,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             # Add testing mode to options with a default of False if not set
             vol.Optional(
                 CONF_DMX_TESTING_MODE,
-                default=self.options.get(
+                default=self.config_entry.options.get(
                     CONF_DMX_TESTING_MODE,
                     self.config_entry.data.get(CONF_DMX_TESTING_MODE, False),
                 ),
