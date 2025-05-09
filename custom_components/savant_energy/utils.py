@@ -266,13 +266,14 @@ async def _execute_curl_command(cmd: str) -> tuple[int, str, str]:
     return process.returncode, stdout.decode(), stderr.decode()
 
 
-async def async_set_dmx_values(ip_address: str, channel_values: Dict[int, str], ola_port: int = 9090) -> bool:
+async def async_set_dmx_values(ip_address: str, channel_values: Dict[int, str], ola_port: int = 9090, testing_mode: bool = False) -> bool:
     """Set DMX values for channels.
     
     Args:
         ip_address: IP address of the OLA server
         channel_values: Dictionary mapping channel numbers (starting at 1) to values
         ola_port: Port for the OLA server
+        testing_mode: If True, only log the command without executing it
     
     Returns:
         True if successful, False otherwise
@@ -303,29 +304,37 @@ async def async_set_dmx_values(ip_address: str, channel_values: Dict[int, str], 
         # Build the curl command with properly formatted parameters
         cmd = f'curl -X POST -d "u=1&d={data_param}" http://{ip_address}:{ola_port}/set_dmx'
         
-        # Log the curl command prominently so it's visible in the logs
-        _LOGGER.warning(f"CURL COMMAND (not sent): {cmd}")  # Use warning level for better visibility
+        # Log the curl command prominently so it's visible in the logs (for debugging)
+        log_level = logging.INFO if testing_mode else logging.DEBUG
+        _LOGGER.log(log_level, f"DMX COMMAND {'(TESTING MODE - NOT SENT)' if testing_mode else '(sending)'}: {cmd}")
         
-        # To actually send the command, call:
-        # returncode, stdout, stderr = await _execute_curl_command(cmd)
-        # if returncode != 0:
-        #     _LOGGER.error(f"Error setting DMX values: {stderr}")
-        #     _dmx_api_stats["failure_count"] += 1
-        #     _dmx_api_stats["success_rate"] = ((_dmx_api_stats["request_count"] - _dmx_api_stats["failure_count"]) / 
-        #                                      _dmx_api_stats["request_count"]) * 100.0
-        #     return False
-        # _LOGGER.info(f"DMX command response: {stdout}")
+        # In testing mode, just log the command and return success without executing
+        if testing_mode:
+            _dmx_api_stats["last_successful_call"] = datetime.now()
+            _dmx_api_stats["success_rate"] = ((_dmx_api_stats["request_count"] - _dmx_api_stats["failure_count"]) / 
+                                            _dmx_api_stats["request_count"]) * 100.0
+            return True
+        
+        # Actually send the command if not in testing mode
+        returncode, stdout, stderr = await _execute_curl_command(cmd)
+        if returncode != 0:
+            _LOGGER.error(f"Error setting DMX values: {stderr}")
+            _dmx_api_stats["failure_count"] += 1
+            _dmx_api_stats["success_rate"] = ((_dmx_api_stats["request_count"] - _dmx_api_stats["failure_count"]) / 
+                                            _dmx_api_stats["request_count"]) * 100.0
+            return False
+        _LOGGER.info(f"DMX command response: {stdout}")
 
         _dmx_api_stats["last_successful_call"] = datetime.now()
         _dmx_api_stats["success_rate"] = ((_dmx_api_stats["request_count"] - _dmx_api_stats["failure_count"]) / 
-                                         _dmx_api_stats["request_count"]) * 100.0
+                                        _dmx_api_stats["request_count"]) * 100.0
         return True
         
     except Exception as e:
         _LOGGER.error(f"Failed to set DMX values: {str(e)}")
         _dmx_api_stats["failure_count"] += 1
         _dmx_api_stats["success_rate"] = ((_dmx_api_stats["request_count"] - _dmx_api_stats["failure_count"]) / 
-                                         _dmx_api_stats["request_count"]) * 100.0
+                                        _dmx_api_stats["request_count"]) * 100.0
         return False
 
 

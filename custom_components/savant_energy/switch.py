@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN, MANUFACTURER, DEFAULT_OLA_PORT
+from .const import DOMAIN, CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN, MANUFACTURER, DEFAULT_OLA_PORT, CONF_DMX_TESTING_MODE
 from .models import get_device_model
 from .utils import calculate_dmx_uid, async_set_dmx_values, async_get_dmx_address
 
@@ -176,17 +176,22 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         """Send a DMX command with the full state of all addresses."""
         # Build the full DMX state array
         dmx_states, max_address = await self._get_all_device_dmx_states(target_dmx_address, target_value)
-        # Fill in missing addresses as ON (255)
-        value_array = ["255"] * max_address
-        for addr in range(1, max_address + 1):
-            value_array[addr-1] = dmx_states.get(addr, "255")
-        data_param = ",".join(value_array)
+        
         ip_address = self.coordinator.config_entry.data.get("address")
         ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
-        cmd = f'curl -X POST -d "u=1&d={data_param}" http://{ip_address}:{ola_port}/set_dmx'
-        _LOGGER.warning(f"CURL COMMAND (not sent): {cmd}")
-        # Optionally, call the real async_set_dmx_values if you want to actually send it
-        return True
+        
+        # Get DMX testing mode from config
+        dmx_testing_mode = self.coordinator.config_entry.options.get(
+            CONF_DMX_TESTING_MODE,
+            self.coordinator.config_entry.data.get(CONF_DMX_TESTING_MODE, False)
+        )
+        
+        # Pass the testing mode parameter to the utility function
+        success = await async_set_dmx_values(ip_address, dmx_states, ola_port, dmx_testing_mode)
+        if not success:
+            _LOGGER.error(f"Failed to send DMX command for {self.name} at address {target_dmx_address}")
+            
+        return success
 
     @property
     def available(self) -> bool:

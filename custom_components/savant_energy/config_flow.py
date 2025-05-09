@@ -15,6 +15,7 @@ from .const import (
     CONF_OLA_PORT,
     CONF_SCAN_INTERVAL,
     CONF_SWITCH_COOLDOWN,
+    CONF_DMX_TESTING_MODE,
     DEFAULT_SWITCH_COOLDOWN,
     DEFAULT_OLA_PORT,
 )
@@ -52,6 +53,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_ADDRESS): str,
                     vol.Required(CONF_PORT, default=2000): int,
                     vol.Required(CONF_OLA_PORT, default=DEFAULT_OLA_PORT): int,
+                    vol.Optional(CONF_DMX_TESTING_MODE, default=False): bool,  # Add testing mode option
                 }
             ),
             errors=errors,
@@ -125,6 +127,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                 ),
             ): int,
+            # Add testing mode to options with a default of False if not set
+            vol.Optional(
+                CONF_DMX_TESTING_MODE,
+                default=self.config_entry.options.get(
+                    CONF_DMX_TESTING_MODE,
+                    self.config_entry.data.get(CONF_DMX_TESTING_MODE, False),
+                ),
+            ): bool,
         }
 
         return self.async_show_form(

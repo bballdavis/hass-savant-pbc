@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_OLA_PORT
+from .const import DOMAIN, MANUFACTURER, DEFAULT_OLA_PORT, CONF_DMX_TESTING_MODE
 from .utils import async_set_dmx_values, get_dmx_api_stats
 
 _LOGGER = logging.getLogger(__name__)
@@ -69,46 +69,30 @@ class SavantAllLoadsButton(ButtonEntity):
         dmx_values = {}
         max_dmx_address = 0
         
-        # Try to determine actual count from DMX address sensors
-        if self.coordinator.data and "presentDemands" in self.coordinator.data:
-            # Collect DMX addresses for all devices
-            for device in self.coordinator.data["presentDemands"]:
-                device_uid = device["uid"]
-                device_name = device["name"]
-                
-                # Try to get DMX address from sensor entity
-                dmx_address = None
-                
-                # Try different entity_id patterns
-                entity_id_patterns = [
-                    f"sensor.{device_name.lower().replace(' ', '_')}_dmx_address",
-                    f"sensor.savantenergy_{device_uid}_dmx_address",
-                    f"sensor.savant_energy_{device_uid}_dmx_address"
-                ]
-                
-                for entity_id in entity_id_patterns:
-                    state = self.hass.states.get(entity_id)
-                    if state and state.state not in ("unknown", "unavailable"):
-                        try:
-                            dmx_address = int(state.state)
-                            # Set this DMX address to "on"
-                            dmx_values[dmx_address] = "255"
-                            if dmx_address > max_dmx_address:
-                                max_dmx_address = dmx_address
-                            _LOGGER.debug(f"Found DMX address {dmx_address} for device {device_name}")
-                            break
-                        except (ValueError, TypeError):
-                            continue
-            
-            # If no valid DMX addresses found, create some defaults
-            if not dmx_values:
-                _LOGGER.warning("No DMX addresses found, defaulting to addresses 1-%d", DEFAULT_CHANNEL_COUNT)
-                for addr in range(1, DEFAULT_CHANNEL_COUNT + 1):
-                    dmx_values[addr] = "255"
-                max_dmx_address = DEFAULT_CHANNEL_COUNT
-        else:
-            # Default to handling addresses 1-50
-            _LOGGER.warning("No presentDemands data found, defaulting to addresses 1-%d", DEFAULT_CHANNEL_COUNT)
+        # Get all sensor entities that might be DMX address sensors
+        all_entity_ids = self.hass.states.async_entity_ids("sensor")
+        dmx_address_sensors = [entity_id for entity_id in all_entity_ids 
+                              if entity_id.endswith("_dmx_address")]
+        
+        _LOGGER.debug(f"Found {len(dmx_address_sensors)} potential DMX address sensors")
+        
+        # Extract DMX addresses from all matching sensors
+        for entity_id in dmx_address_sensors:
+            state = self.hass.states.get(entity_id)
+            if state and state.state not in ("unknown", "unavailable"):
+                try:
+                    dmx_address = int(state.state)
+                    # Set this DMX address to "on"
+                    dmx_values[dmx_address] = "255"
+                    if dmx_address > max_dmx_address:
+                        max_dmx_address = dmx_address
+                    _LOGGER.debug(f"Found DMX address {dmx_address} from sensor {entity_id}")
+                except (ValueError, TypeError):
+                    _LOGGER.debug(f"Invalid DMX address value in sensor {entity_id}: {state.state}")
+        
+        # Only use default if we didn't find any valid DMX addresses
+        if max_dmx_address == 0:
+            _LOGGER.warning("No valid DMX addresses found from sensors, defaulting to addresses 1-%d", DEFAULT_CHANNEL_COUNT)
             for addr in range(1, DEFAULT_CHANNEL_COUNT + 1):
                 dmx_values[addr] = "255"
             max_dmx_address = DEFAULT_CHANNEL_COUNT
@@ -121,11 +105,17 @@ class SavantAllLoadsButton(ButtonEntity):
 
         # Get OLA port from config entry or use default
         ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
+        
+        # Get DMX testing mode from config
+        dmx_testing_mode = self.coordinator.config_entry.options.get(
+            CONF_DMX_TESTING_MODE,
+            self.coordinator.config_entry.data.get(CONF_DMX_TESTING_MODE, False)
+        )
 
         _LOGGER.info(f"Turning on all {len(dmx_values)} loads (max DMX address: {max_dmx_address})")
         
-        # Use utility function to send command
-        success = await async_set_dmx_values(ip_address, dmx_values, ola_port)
+        # Use utility function to send command - this will both log and send the command
+        success = await async_set_dmx_values(ip_address, dmx_values, ola_port, dmx_testing_mode)
         
         if success:
             _LOGGER.info("All loads turned on successfully")
@@ -174,32 +164,26 @@ class SavantApiCommandLogButton(ButtonEntity):
         dmx_values = {}
         max_dmx_address = 0
         
-        # Try to determine actual DMX addresses from sensors
-        if self.coordinator.data and "presentDemands" in self.coordinator.data:
-            # Collect DMX addresses for all devices
-            for device in self.coordinator.data["presentDemands"]:
-                device_uid = device["uid"]
-                device_name = device["name"]
-                
-                # Try different entity_id patterns for DMX address sensors
-                entity_id_patterns = [
-                    f"sensor.{device_name.lower().replace(' ', '_')}_dmx_address",
-                    f"sensor.savantenergy_{device_uid}_dmx_address",
-                    f"sensor.savant_energy_{device_uid}_dmx_address"
-                ]
-                
-                for entity_id in entity_id_patterns:
-                    state = self.hass.states.get(entity_id)
-                    if state and state.state not in ("unknown", "unavailable"):
-                        try:
-                            dmx_address = int(state.state)
-                            # Set this DMX address to "on"
-                            dmx_values[dmx_address] = "255"
-                            if dmx_address > max_dmx_address:
-                                max_dmx_address = dmx_address
-                            break
-                        except (ValueError, TypeError):
-                            continue
+        # Get all sensor entities that might be DMX address sensors
+        all_entity_ids = self.hass.states.async_entity_ids("sensor")
+        dmx_address_sensors = [entity_id for entity_id in all_entity_ids 
+                              if entity_id.endswith("_dmx_address")]
+        
+        _LOGGER.debug(f"Found {len(dmx_address_sensors)} potential DMX address sensors")
+        
+        # Extract DMX addresses from all matching sensors
+        for entity_id in dmx_address_sensors:
+            state = self.hass.states.get(entity_id)
+            if state and state.state not in ("unknown", "unavailable"):
+                try:
+                    dmx_address = int(state.state)
+                    # Set this DMX address to "on"
+                    dmx_values[dmx_address] = "255"
+                    if dmx_address > max_dmx_address:
+                        max_dmx_address = dmx_address
+                    _LOGGER.debug(f"Found DMX address {dmx_address} from sensor {entity_id}")
+                except (ValueError, TypeError):
+                    _LOGGER.debug(f"Invalid DMX address value in sensor {entity_id}: {state.state}")
         
         # If no valid DMX addresses found, create some defaults
         if not dmx_values or max_dmx_address == 0:
