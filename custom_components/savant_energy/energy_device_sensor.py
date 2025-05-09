@@ -1,0 +1,140 @@
+"""Energy Device Sensor for Savant Energy."""
+
+import logging
+from typing import Any, Optional
+
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorDeviceClass,
+    SensorStateClass,
+)
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import DOMAIN, MANUFACTURER
+from .models import get_device_model
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
+    """Representation of a Savant Energy Sensor."""
+
+    def __init__(self, coordinator, device, sensor_type, unique_id, dmx_uid):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._device = device
+        self._sensor_type = sensor_type
+        self._attr_name = f"{device['name']} {sensor_type.capitalize()}"
+        self._attr_unique_id = unique_id
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, str(device["uid"]))},
+            name=device["name"],
+            serial_number=dmx_uid,  # Set DMX UID as the serial number
+            manufacturer=MANUFACTURER,
+            model=get_device_model(device.get("capacity", 0)),  # Determine model
+        )
+        self._attr_native_unit_of_measurement = self._get_unit_of_measurement(
+            sensor_type
+        )
+        self._dmx_uid = dmx_uid  # Ensure DMX UID is stored
+
+    def _get_unit_of_measurement(self, sensor_type: str) -> str | None:
+        """Return the unit of measurement for the sensor type."""
+        match sensor_type:
+            case "voltage":
+                return "V"
+            case "power":
+                return "W"  # This is correct - power should be in W
+            case _:
+                return None
+
+    @property
+    def state_class(self) -> SensorStateClass | None:
+        """Return the state class of the sensor."""
+        match self._sensor_type:
+            case "power":
+                return SensorStateClass.MEASUREMENT
+            case "voltage":
+                return SensorStateClass.MEASUREMENT
+            case _:
+                return SensorStateClass.MEASUREMENT
+    
+    @property
+    def device_class(self) -> str | None:
+        """Return the device class of the sensor."""
+        match self._sensor_type:
+            case "power":
+                return SensorDeviceClass.POWER
+            case "voltage":
+                return SensorDeviceClass.VOLTAGE
+            case _:
+                return None
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the state of the sensor."""
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    # Get value based on sensor type
+                    value = device.get(self._sensor_type)
+                    
+                    # Handle power value (convert kW to W for proper energy calculation)
+                    if self._sensor_type == "power" and value is not None:
+                        try:
+                            return float(value) * 1000.0  # Convert kW to W
+                        except (ValueError, TypeError):
+                            _LOGGER.error(
+                                "Invalid power value %s for device %s", 
+                                value, device["uid"]
+                            )
+                            return None
+                    
+                    # Handle other numerical values
+                    if value is not None:
+                        try:
+                            return float(value)
+                        except (ValueError, TypeError):
+                            return value
+                            
+                    return value
+        return None
+
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        match self._sensor_type:
+            case "voltage":
+                return "mdi:lightning-bolt-outline"
+            case "power":
+                return "mdi:gauge"
+            case _:
+                return "mdi:gauge"
+
+    @property
+    def available(self) -> bool:
+        """Return True if the entity is available."""
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if not snapshot_data or "presentDemands" not in snapshot_data:
+            return False
+
+        # Check if this specific device exists in the coordinator data
+        for device in snapshot_data["presentDemands"]:
+            if device["uid"] == self._device["uid"]:
+                # For relay status (percentCommanded), check if the value exists
+                if (
+                    self._sensor_type == "percentCommanded"
+                    and "percentCommanded" not in device
+                ):
+                    return False
+                # For other sensor types, check if the value exists
+                elif (
+                    self._sensor_type != "percentCommanded"
+                    and self._sensor_type not in device
+                ):
+                    return False
+                return True
+
+        return False

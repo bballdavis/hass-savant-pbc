@@ -63,20 +63,27 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
             ),  # Use the model lookup function
             serial_number=self._dmx_uid,  # Add DMX UID as serial number
         )
-        self._attr_is_on = self._get_percent_commanded_state()
+        self._attr_is_on = self._get_relay_status_state()
         self._last_commanded_state = self._attr_is_on
         self.async_on_remove(
             self.coordinator.async_add_listener(self._handle_coordinator_update)
         )
 
-    def _get_percent_commanded_state(self) -> bool | None:
-        """Get the state of the switch based on percentCommanded, or None if unknown."""
-        snapshot_data = self.coordinator.data.get("snapshot_data", {})
-        if snapshot_data and "presentDemands" in snapshot_data:
-            for device in snapshot_data["presentDemands"]:
-                if device["uid"] == self._device["uid"]:
-                    if "percentCommanded" in device:
-                        return device["percentCommanded"] == 100
+    def _get_relay_status_state(self) -> bool | None:
+        """Get the state of the switch based on the relay status sensor, or None if unknown."""
+        device_name = self._device['name']
+        
+        # Look for binary sensor with Relay Status in the name for this device
+        for binary_sensor in self._hass.states.async_all("binary_sensor"):
+            if (binary_sensor.attributes.get("friendly_name") and 
+                f"{device_name} Relay Status" == binary_sensor.attributes.get("friendly_name")):
+                if binary_sensor.state.lower() == "on":
+                    return True
+                elif binary_sensor.state.lower() == "off":
+                    return False
+                # If state is not "on" or "off", it's unknown
+                break
+        
         return None
 
     async def _get_dmx_address_from_sensor(self) -> int | None:
@@ -98,78 +105,82 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
             except (ValueError, TypeError):
                 _LOGGER.warning(f"Invalid DMX address in sensor {state.entity_id}: {state.state}")
                 
-        return None
+        return None    
 
     async def _fetch_dmx_address(self) -> int | None:
-        """Fetch DMX address either from sensor or directly from API."""
-        # First try to get from sensor
+        """Fetch DMX address from sensor only."""
+        # Only get from sensor
         address = await self._get_dmx_address_from_sensor()
         if address is not None:
             return address
             
-        # If sensor doesn't have the address, fetch directly from API
-        if not self.coordinator.config_entry:
-            _LOGGER.warning(f"No config entry available for {self.name}")
-            return None
-            
-        ip_address = self.coordinator.config_entry.data.get("address")
-        ola_port = self.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
-        
-        if not ip_address:
-            _LOGGER.warning(f"No IP address available for {self.name}")
-            return None
-            
-        # Default universe is 1
-        
-        _LOGGER.debug(f"Fetching DMX address for {self.name} with UID {self._dmx_uid}")
-        address = await async_get_dmx_address(ip_address, ola_port, universe, self._dmx_uid)
-        if address is not None:
-            _LOGGER.info(f"Fetched DMX address for {self.name}: {address}")
-            return address
-        else:
-            _LOGGER.warning(f"Failed to fetch DMX address for {self.name}")
-            return None
+        _LOGGER.warning(f"No DMX address found in sensor for {self.name}")
+        return None
 
     async def _get_all_device_dmx_states(self, target_dmx_address=None, target_value=None):
-        """Build a dict of {dmx_address: value} for all devices, using relay status, assuming 255 if unknown/missing."""
-        # Get all presentDemands
-        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        """Build a dict of {dmx_address: value} for all devices using only DMX Address and Relay Status sensors."""
         dmx_states = {}
         max_address = 0
-        if snapshot_data and "presentDemands" in snapshot_data:
-            for device in snapshot_data["presentDemands"]:
-                # Get DMX address from sensor state
-                dmx_uid = calculate_dmx_uid(device["uid"])
-                # Try to get DMX address from sensor entity
-                dmx_address = None
-                entity_id = f"sensor.savantenergy_{device['uid']}_dmx_address"
-                state = self._hass.states.get(entity_id)
-                if not state or state.state in ("unknown", "unavailable"):
-                    # Try fallback
-                    alt_entity_id = f"sensor.{device['name'].lower().replace(' ', '_')}_dmx_address"
-                    state = self._hass.states.get(alt_entity_id)
-                if state and state.state not in ("unknown", "unavailable"):
-                    try:
-                        dmx_address = int(state.state)
-                    except Exception:
-                        pass
-                # If still not found, skip this device
-                if not dmx_address:
-                    continue
-                # Determine relay status
-                relay_status = device.get("percentCommanded")
-                if relay_status is None:
-                    value = "255"  # Assume ON if unknown
-                else:
-                    value = "255" if relay_status == 100 else "0"
-                dmx_states[dmx_address] = value
-                if dmx_address > max_address:
-                    max_address = dmx_address
+
+        # Get all DMX address sensors
+        dmx_address_entities = [entity for entity in self._hass.states.async_all("sensor") if entity.entity_id.endswith("_dmx_address")]
+
+        for dmx_address_entity in dmx_address_entities:
+            # Skip if the DMX address is not a valid number
+            if dmx_address_entity.state in ("unknown", "unavailable") or not dmx_address_entity.state:
+                continue
+            try:
+                dmx_address = int(dmx_address_entity.state)
+            except (ValueError, TypeError):
+                _LOGGER.warning(f"Invalid DMX address in sensor {dmx_address_entity.entity_id}: {dmx_address_entity.state}")
+                continue
+
+            # Find the corresponding relay status sensor from binary_sensor domain
+            # Extract device name from the DMX address sensor
+            entity_id = dmx_address_entity.entity_id
+            device_name = None
+            
+            # Try to extract device name from sensor entity attributes
+            sensor_state = self._hass.states.get(entity_id)
+            if sensor_state and sensor_state.attributes.get("friendly_name"):
+                # Remove " DMX Address" from the friendly name
+                device_name = sensor_state.attributes.get("friendly_name").replace(" DMX Address", "")
+            
+            if not device_name:
+                # Fallback: try to extract from entity_id
+                entity_name = entity_id.split(".", 1)[1].replace("_dmx_address", "")
+                # Convert underscores to spaces and title case
+                device_name = entity_name.replace("_", " ").title()
+            
+            # Look for a binary sensor with "Relay Status" in the name for this device
+            relay_found = False
+            for binary_sensor in self._hass.states.async_all("binary_sensor"):
+                if binary_sensor.attributes.get("friendly_name") and f"{device_name} Relay Status" == binary_sensor.attributes.get("friendly_name"):
+                    relay_status_state = binary_sensor
+                    relay_found = True
+                    break
+            
+            # Default to ON (255) if relay status is not found or unknown
+            value = "255"
+            if relay_found and relay_status_state.state not in ("unknown", "unavailable"):
+                if relay_status_state.state.lower() == "on":
+                    value = "255"
+                elif relay_status_state.state.lower() == "off":
+                    value = "0"
+                _LOGGER.debug(f"Found relay status for {device_name}: {relay_status_state.state} (using value {value})")
+            else:
+                _LOGGER.debug(f"No relay status found for {device_name}, defaulting to ON")
+
+            dmx_states[dmx_address] = value
+            if dmx_address > max_address:
+                max_address = dmx_address
+
         # If a target address/value is provided (for the switch being toggled), override it
         if target_dmx_address:
             dmx_states[target_dmx_address] = target_value
             if target_dmx_address > max_address:
                 max_address = target_dmx_address
+
         return dmx_states, max_address
 
     async def _send_full_dmx_command(self, target_dmx_address, target_value):
@@ -202,7 +213,7 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
             return False
 
         # Then check if we can get a valid relay state
-        relay_state = self._get_percent_commanded_state()
+        relay_state = self._get_relay_status_state()
         if relay_state is None:
             return False
 
@@ -210,8 +221,25 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        """Return the state of the switch based solely on percentCommanded."""
-        return self._attr_is_on if self._attr_is_on is not None else False
+        """Return the state of the switch based on the relay status sensor."""
+        # Return the stored state if we have one
+        if self._attr_is_on is not None:
+            return self._attr_is_on
+
+        # Try to find the relay status sensor for this device
+        device_name = self._device['name']
+        
+        # Look for binary sensor with Relay Status in the name for this device
+        for binary_sensor in self._hass.states.async_all("binary_sensor"):
+            if (binary_sensor.attributes.get("friendly_name") and 
+                f"{device_name} Relay Status" == binary_sensor.attributes.get("friendly_name")):
+                if binary_sensor.state.lower() == "on":
+                    return True
+                elif binary_sensor.state.lower() == "off":
+                    return False
+        
+        # Fall back to off if we can't find the relay status
+        return False
 
     async def async_turn_on(self, **kwargs):
         """Turn the switch on."""
@@ -274,11 +302,18 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        # Always use presentDemand for state updates
-        new_state = self._get_percent_commanded_state()
-        # Only process state changes
-        if new_state != self._last_commanded_state:
-            # No cooldown check here: always accept coordinator state
+        # Look for binary sensor with Relay Status in name for this device
+        device_name = self._device['name']
+        new_state = None
+        
+        for binary_sensor in self._hass.states.async_all("binary_sensor"):
+            if (binary_sensor.attributes.get("friendly_name") and 
+                f"{device_name} Relay Status" == binary_sensor.attributes.get("friendly_name")):
+                new_state = binary_sensor.state.lower() == "on"
+                break
+        
+        # Only update if we found a relay status and it's different from our current state
+        if new_state is not None and new_state != self._last_commanded_state:
             self._attr_is_on = new_state
             self._last_commanded_state = new_state
             self.async_write_ha_state()

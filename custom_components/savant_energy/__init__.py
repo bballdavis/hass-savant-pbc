@@ -69,14 +69,13 @@ class SavantEnergyCoordinator(DataUpdateCoordinator):
             
             # Get OLA port from config entry or use default
             ola_port = self.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
-            
-            # Since we don't track channels anymore, we reset the dmx_data
+              # Since we don't track channels anymore, we reset the dmx_data
             self.dmx_data = {}
             self.dmx_last_update = now
         
-        # Return snapshot data only - we no longer include device_channel_map
+        # Return full data with snapshot and dmx data
         return {
-            "snapshot_data": snapshot_data, 
+            "snapshot_data": snapshot_data,
             "dmx_data": self.dmx_data
         }
 
