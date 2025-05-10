@@ -1,4 +1,8 @@
-"""Sensor platform for Savant Energy."""
+"""
+Sensor platform for Savant Energy.
+Creates power, voltage, and DMX address sensors for each relay device.
+All classes and functions are now documented for clarity and open source maintainability.
+"""
 
 import logging
 
@@ -6,7 +10,7 @@ from homeassistant.helpers.entity import DeviceInfo
 
 from .const import DOMAIN, MANUFACTURER
 from .models import get_device_model
-from .energy_device_sensor import EnergyDeviceSensor
+from .power_device_sensor import EnergyDeviceSensor
 from .dmx_address_sensor import DMXAddressSensor
 from .utils import calculate_dmx_uid
 
@@ -14,11 +18,14 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
-    """Set up Savant Energy sensor entities."""
+    """
+    Set up Savant Energy sensor entities.
+    Creates power, voltage, and DMX address sensors for each relay device found in presentDemands.
+    """
     coordinator = hass.data[DOMAIN][config_entry.entry_id]
 
     entities = []
-    power_sensors = []  # Keep track of power sensors for utility meter creation
+    power_sensors = []  # Track power sensors for utility meter creation
 
     snapshot_data = coordinator.data.get("snapshot_data", {})
     if (
@@ -48,14 +55,14 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 model=get_device_model(device.get("capacity", 0)),
             )
 
-            # Create regular sensors
+            # Create power sensor
             power_sensor = EnergyDeviceSensor(
                 coordinator, device, "power", f"SavantEnergy_{uid}_power", dmx_uid
             )
             entities.append(power_sensor)
             power_sensors.append(power_sensor)
 
-            # Add other sensors
+            # Create voltage sensor
             entities.append(
                 EnergyDeviceSensor(
                     coordinator,
@@ -66,7 +73,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 )
             )
             
-            # Add DMX address sensor instead of channel
+            # Create DMX address sensor
             entities.append(
                 DMXAddressSensor(
                     coordinator,

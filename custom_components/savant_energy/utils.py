@@ -1,4 +1,7 @@
-"""Utility functions for Savant Energy integration."""
+"""Utility functions for Savant Energy integration.
+Provides DMX, API, and helper routines for the integration.
+All utility functions are now documented for clarity and open source maintainability.
+"""
 
 import logging
 import asyncio
@@ -35,45 +38,45 @@ _api_request_count: int = 0
 # DMX address cache to minimize API calls
 _dmx_address_cache = {}  # Maps DMX UID -> {"address": int, "timestamp": datetime}
 
-# Log the utility module loading
-_LOGGER.warning("Savant Energy utils module loaded")
-
 
 def calculate_dmx_uid(uid: str) -> str:
-    """Calculate the DMX UID based on the device UID, incrementing as hex if needed."""
+    """
+    Calculate the DMX UID based on the device UID, incrementing as hex if needed.
+    Args:
+        uid: Device UID string
+    Returns:
+        DMX UID string in the format XXXX:YYYYYY
+    """
     base_uid = uid.split(".")[0]
-    # Format as XXXX:YYYYYY
     base_uid = f"{base_uid[:4]}:{base_uid[4:]}"
     if uid.endswith(".1"):
-        # Increment the last 2 hex digits as a hex number
         prefix = base_uid[:-2]
         last_two = base_uid[-2:]
         try:
             incremented = f"{int(last_two, 16) + 1:02X}"
         except Exception:
-            incremented = last_two  # fallback, shouldn't happen
+            incremented = last_two
         base_uid = prefix + incremented
     return base_uid
 
 
 async def async_get_dmx_address(ip_address: str, ola_port: int, universe: int, dmx_uid: str) -> Optional[int]:
-    """Get DMX address for a device using the RDM API.
-    
+    """
+    Get DMX address for a device using the RDM API.
     Args:
         ip_address: IP address of the OLA server
         ola_port: OLA server port
         universe: DMX universe ID (usually 1)
         dmx_uid: The DMX UID of the device
-        
     Returns:
         The DMX address as an integer or None if not found
     """
     global _dmx_address_cache
     
-    # Check cache first
     cache_key = f"{dmx_uid}"
     now = datetime.now()
     
+    # Check cache for existing DMX address
     if cache_key in _dmx_address_cache:
         cache_entry = _dmx_address_cache[cache_key]
         if (now - cache_entry["timestamp"]).total_seconds() < DMX_ADDRESS_CACHE_SECONDS:
@@ -84,7 +87,6 @@ async def async_get_dmx_address(ip_address: str, ola_port: int, universe: int, d
         _LOGGER.warning("Missing IP address or OLA port for DMX address request")
         return None
     
-    # Format URL for RDM request
     url = f"http://{ip_address}:{ola_port}/json/rdm/uid_info?id={universe}&uid={dmx_uid}"
     _LOGGER.debug(f"Fetching DMX address from: {url}")
     
@@ -92,18 +94,15 @@ async def async_get_dmx_address(ip_address: str, ola_port: int, universe: int, d
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as response:
                 if response.status == 200:
-                    # Get response as text since we need to parse it manually
                     text_response = await response.text()
                     _LOGGER.debug(f"RDM raw text response: {text_response}")
                     
                     try:
-                        # Parse the text response as JSON
                         data = json.loads(text_response)
                         _LOGGER.debug(f"RDM parsed JSON response: {data}")
                         
                         if "address" in data:
                             address = int(data["address"])
-                            # Cache the result
                             _dmx_address_cache[cache_key] = {
                                 "address": address,
                                 "timestamp": now
@@ -126,13 +125,12 @@ async def async_get_dmx_address(ip_address: str, ola_port: int, universe: int, d
 
 
 async def async_get_all_dmx_status(ip_address: str, channels: List[int], ola_port: int = DEFAULT_OLA_PORT) -> Dict[int, bool]:
-    """Get DMX status for specified channels in one batch.
-    
+    """
+    Get DMX status for specified channels in one batch.
     Args:
         ip_address: IP address of the OLA server
         channels: List of DMX channels to check
         ola_port: OLA server port
-        
     Returns:
         Dictionary mapping channel numbers to boolean status (True = on, False = off)
     """
@@ -142,7 +140,6 @@ async def async_get_all_dmx_status(ip_address: str, channels: List[int], ola_por
         _LOGGER.warning("Channels parameter is required but was empty - nothing to check")
         return {}
     
-    # Convert all channels to integers to ensure proper handling
     int_channels = []
     for ch in channels:
         try:
@@ -155,28 +152,24 @@ async def async_get_all_dmx_status(ip_address: str, channels: List[int], ola_por
         return {}
     
     url = f"http://{ip_address}:{ola_port}/get_dmx?u=1"
-    #_LOGGER.warning(f"Making DMX request to: {url}")
     
-    dmx_status_dict = {}  # Maps channel -> status
+    dmx_status_dict = {}
     
     try:
         _api_request_count += 1
         
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as response:
-                #_LOGGER.debug(f"Got response with status: {response.status}")
                 if response.status == 200:
                     data = await response.text()
                     
                     try:
-                        # Parse JSON response - DMX data will always be in a "dmx" field
                         json_data = json.loads(data)
                         if "dmx" in json_data:
                             dmx_values = json_data["dmx"]
                             
-                            # Map channel to status - channels in DMX start at 1, but array is 0-indexed
                             for channel in int_channels:
-                                if 0 <= channel-1 < len(dmx_values):  # Adjust index by -1
+                                if 0 <= channel-1 < len(dmx_values):
                                     channel_value = dmx_values[channel-1]
                                     dmx_status = channel_value != DMX_OFF_VALUE
                                     dmx_status_dict[channel] = dmx_status
@@ -205,7 +198,15 @@ async def async_get_all_dmx_status(ip_address: str, channels: List[int], ola_por
 
 
 async def async_get_dmx_status(ip_address: str, channel: int, ola_port: int = DEFAULT_OLA_PORT) -> Optional[bool]:
-    """Get DMX status for a specific channel."""
+    """
+    Get DMX status for a specific channel.
+    Args:
+        ip_address: IP address of the OLA server
+        channel: DMX channel number
+        ola_port: OLA server port
+    Returns:
+        Boolean status (True = on, False = off) or None if unavailable
+    """
     global _last_successful_api_call, _api_failure_count, _api_request_count
     
     _LOGGER.debug(f"DMX STATUS REQUEST - Channel: {channel}, IP: {ip_address}, Port: {ola_port}")
@@ -224,14 +225,12 @@ async def async_get_dmx_status(ip_address: str, channel: int, ola_port: int = DE
                 if response.status == 200:
                     data = await response.text()
                     try:
-                        # Parse JSON response
                         json_data = json.loads(data)
                         if "dmx" in json_data:
                             dmx_values = json_data["dmx"]
                             
-                            # DMX channels start at 1, but array is 0-indexed
                             if 0 <= channel-1 < len(dmx_values):
-                                value = dmx_values[channel-1]  # Adjust index by -1
+                                value = dmx_values[channel-1]
                                 dmx_status = value != DMX_OFF_VALUE
                                 _last_successful_api_call = datetime.now()
                                 return dmx_status
@@ -256,7 +255,13 @@ async def async_get_dmx_status(ip_address: str, channel: int, ola_port: int = DE
 
 
 async def _execute_curl_command(cmd: str) -> tuple[int, str, str]:
-    """Execute the given curl command asynchronously and return (returncode, stdout, stderr)."""
+    """
+    Execute the given curl command asynchronously.
+    Args:
+        cmd: Curl command string
+    Returns:
+        Tuple containing (returncode, stdout, stderr)
+    """
     process = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -267,14 +272,13 @@ async def _execute_curl_command(cmd: str) -> tuple[int, str, str]:
 
 
 async def async_set_dmx_values(ip_address: str, channel_values: Dict[int, str], ola_port: int = 9090, testing_mode: bool = False) -> bool:
-    """Set DMX values for channels.
-    
+    """
+    Set DMX values for channels.
     Args:
         ip_address: IP address of the OLA server
         channel_values: Dictionary mapping channel numbers (starting at 1) to values
         ola_port: Port for the OLA server
         testing_mode: If True, only log the command without executing it
-    
     Returns:
         True if successful, False otherwise
     """
@@ -282,40 +286,30 @@ async def async_set_dmx_values(ip_address: str, channel_values: Dict[int, str], 
     _dmx_api_stats["request_count"] += 1
     
     try:
-        # Find the maximum channel number to determine array size
         max_channel = max(channel_values.keys()) if channel_values else 0
         
-        # Create array of values where index position corresponds to channel-1
-        # (since DMX channels start at 1, but array indices start at 0)
         value_array = ["0"] * max_channel
         
-        # Set values in the array according to relay status: on=255, off=0
         for channel, value in channel_values.items():
             if 1 <= channel <= max_channel:
-                # Ensure value is "255" for on, "0" for off
                 if str(value) == "255" or str(value).lower() == "on" or str(value) == "1":
                     value_array[channel-1] = "255"
                 else:
                     value_array[channel-1] = "0"
         
-        # Format the data parameter as simple comma-separated values
         data_param = ",".join(value_array)
         
-        # Build the curl command with properly formatted parameters
         cmd = f'curl -X POST -d "u=1&d={data_param}" http://{ip_address}:{ola_port}/set_dmx'
         
-        # Log the curl command prominently so it's visible in the logs (for debugging)
         log_level = logging.INFO if testing_mode else logging.DEBUG
         _LOGGER.log(log_level, f"DMX COMMAND {'(TESTING MODE - NOT SENT)' if testing_mode else '(sending)'}: {cmd}")
         
-        # In testing mode, just log the command and return success without executing
         if testing_mode:
             _dmx_api_stats["last_successful_call"] = datetime.now()
             _dmx_api_stats["success_rate"] = ((_dmx_api_stats["request_count"] - _dmx_api_stats["failure_count"]) / 
                                             _dmx_api_stats["request_count"]) * 100.0
             return True
         
-        # Actually send the command if not in testing mode
         returncode, stdout, stderr = await _execute_curl_command(cmd)
         if returncode != 0:
             _LOGGER.error(f"Error setting DMX values: {stderr}")
@@ -339,7 +333,11 @@ async def async_set_dmx_values(ip_address: str, channel_values: Dict[int, str], 
 
 
 def is_dmx_api_available() -> bool:
-    """Check if the DMX API is currently available."""
+    """
+    Check if the DMX API is currently available.
+    Returns:
+        True if the API is available, False otherwise
+    """
     global _last_successful_api_call
     
     if _last_successful_api_call is None:
@@ -350,5 +348,9 @@ def is_dmx_api_available() -> bool:
 
 
 def get_dmx_api_stats() -> Dict[str, Any]:
-    """Return current DMX API statistics."""
+    """
+    Return current DMX API statistics.
+    Returns:
+        Dictionary containing API statistics
+    """
     return _dmx_api_stats

@@ -1,18 +1,26 @@
-"""Constants for the Savant Energy integration."""
+"""Constants for the Savant Energy integration.
+Defines all configuration keys, defaults, and branding info used throughout the integration.
+All constants are now documented for clarity and open source maintainability.
+"""
 
+# Domain name for the integration
 DOMAIN = "savant_energy"
-PLATFORMS = ["sensor", "binary_sensor", "switch", "button"]  # Added button to platforms
 
-CONF_ADDRESS = "address"
-CONF_PORT = "port"
-CONF_OLA_PORT = "ola_port"
+# List of Home Assistant platforms supported by this integration
+PLATFORMS = ["sensor", "binary_sensor", "switch", "button"]
 
-CONF_SCAN_INTERVAL = "scan_interval"
-CONF_SWITCH_COOLDOWN = "switch_cooldown"
-CONF_DMX_TESTING_MODE = "dmx_testing_mode"  # New testing mode option
+# Configuration keys
+CONF_ADDRESS = "address"  # IP address of Savant controller
+CONF_PORT = "port"        # Port for energy snapshot data
+CONF_OLA_PORT = "ola_port"  # Port for OLA/DMX API
+CONF_SCAN_INTERVAL = "scan_interval"  # Polling interval (seconds)
+CONF_SWITCH_COOLDOWN = "switch_cooldown"  # Minimum seconds between relay toggles
+CONF_DMX_TESTING_MODE = "dmx_testing_mode"  # Enable advanced DMX testing mode
+
+# Default values
 DEFAULT_SWITCH_COOLDOWN = 30  # Default cooldown of 30 seconds
-DEFAULT_PORT = 2000
-DEFAULT_OLA_PORT = 9090
+DEFAULT_PORT = 2000           # Default Savant energy port
+DEFAULT_OLA_PORT = 9090       # Default OLA/DMX API port
 
-# Used for branding
+# Manufacturer branding
 MANUFACTURER = "Savant"

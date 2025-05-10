@@ -1,4 +1,7 @@
-"""Button platform for Savant Energy."""
+"""
+Button platform for Savant Energy.
+Provides diagnostic and control buttons for the integration.
+"""
 
 import logging
 from typing import Final
@@ -22,10 +25,11 @@ DEFAULT_CHANNEL_COUNT: Final = 50
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Set up the Savant Energy button."""
+    """
+    Set up Savant Energy button entities.
+    Adds diagnostic and control buttons if presentDemands data is available.
+    """
     coordinator = hass.data[DOMAIN][entry.entry_id]
-
-    # Only add buttons if we have data
     snapshot_data = coordinator.data.get("snapshot_data", {})
     if (
         snapshot_data
@@ -46,13 +50,16 @@ async def async_setup_entry(
 
 
 class SavantAllLoadsButton(ButtonEntity):
-    """Button to turn on all Savant Energy loads."""
-
+    """
+    Button to turn on all Savant Energy loads (relays).
+    """
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, hass: HomeAssistant, coordinator) -> None:
-        """Initialize the button."""
+        """
+        Initialize the All Loads On button.
+        """
         self.hass = hass
         self.coordinator = coordinator
         self._attr_name = ALL_LOADS_BUTTON_NAME
@@ -64,11 +71,12 @@ class SavantAllLoadsButton(ButtonEntity):
         )
 
     async def async_press(self) -> None:
-        """Handle the button press - send command to turn on all loads."""
-        # Set all channels to ON (255)
+        """
+        Handle the button press - send command to turn on all loads.
+        """
         dmx_values = {}
         max_dmx_address = 0
-        
+
         # Get all sensor entities that might be DMX address sensors
         all_entity_ids = self.hass.states.async_entity_ids("sensor")
         dmx_address_sensors = [entity_id for entity_id in all_entity_ids 
@@ -124,14 +132,17 @@ class SavantAllLoadsButton(ButtonEntity):
 
 
 class SavantApiCommandLogButton(ButtonEntity):
-    """Button that logs an example DMX API command."""
-
+    """
+    Button that logs an example DMX API command.
+    """
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = ButtonDeviceClass.UPDATE
 
     def __init__(self, hass: HomeAssistant, coordinator) -> None:
-        """Initialize the button."""
+        """
+        Initialize the DMX API Command Log button.
+        """
         self.hass = hass
         self.coordinator = coordinator
         self._attr_name = "DMX API Command Log"
@@ -144,11 +155,15 @@ class SavantApiCommandLogButton(ButtonEntity):
 
     @property
     def icon(self) -> str:
-        """Return the button icon."""
+        """
+        Return the button icon.
+        """
         return "mdi:console"
 
     async def async_press(self) -> None:
-        """Handle the button press - log the curl command."""
+        """
+        Handle the button press - log the curl command.
+        """
         # Only log the curl command without executing it
         ip_address = self.coordinator.config_entry.data.get("address")
         if not ip_address:
@@ -209,14 +224,17 @@ class SavantApiCommandLogButton(ButtonEntity):
 
 
 class SavantApiStatsButton(ButtonEntity):
-    """Button to display DMX API statistics."""
-
+    """
+    Button to display DMX API statistics.
+    """
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = ButtonDeviceClass.RESTART
 
     def __init__(self, hass: HomeAssistant, coordinator) -> None:
-        """Initialize the button."""
+        """
+        Initialize the DMX API Statistics button.
+        """
         self.hass = hass
         self.coordinator = coordinator
         self._attr_name = "DMX API Statistics"
@@ -229,11 +247,15 @@ class SavantApiStatsButton(ButtonEntity):
 
     @property
     def icon(self) -> str:
-        """Return the button icon."""
+        """
+        Return the button icon.
+        """
         return "mdi:chart-line"
 
     async def async_press(self) -> None:
-        """Handle the button press - display API statistics."""
+        """
+        Handle the button press - display API statistics.
+        """
         stats = get_dmx_api_stats()
         
         last_success = "Never" if stats["last_successful_call"] is None else stats["last_successful_call"].isoformat()
