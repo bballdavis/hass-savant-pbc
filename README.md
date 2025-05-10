@@ -6,21 +6,23 @@ Welcome to the **Savant Energy** integration for Home Assistant! This project br
 - **Automatic device discovery** from your Savant system
 - **Power and voltage sensors** for each relay
 - **Relay (breaker) switch control** with configurable cooldown
-- **Binary sensors** for relay status
-- **Button entities** for diagnostics and control
-- **DMX address sensors** for advanced users
+- **Relay Binary sensors** for relay status
+- **All Loads On Button** to quickly turn all loads on
+- **DMX address sensors** for controlling individual breakers
 
 ## 🛠️ Installation (via HACS)
 1. **Add the repository to HACS**:
    - In Home Assistant, go to **HACS > Integrations > Custom repositories**.
-   - Add your fork or this repo's URL: `https://github.com/bballdavis/hass-savant-pbc`.
+   - Add your fork or this repo's URL: `https://github.com/bballdavis/HASS-Savant-Energy`.
    - Set category to **Integration**.
 2. **Install the integration**:
    - Search for **Savant Energy** in HACS and click **Install**.
 3. **Restart Home Assistant** to load the integration.
 4. **Add the integration**:
    - Go to **Settings > Devices & Services > Add Integration**.
-   - Search for **Savant Energy** and follow the prompts (enter your Savant controller's IP, port, and OLA port if needed).
+   - Search for **Savant Energy** and follow the prompts.
+   - Add you Panel Controller Bridge's (PCB) IP address.
+   - The port defaults should work, but you can change it if needed.
 
 ## ⚡ How to Use
 Once installed and configured, the integration will automatically create entities for each Savant relay device it discovers. Here’s what you’ll see:
@@ -42,7 +44,7 @@ Once installed and configured, the integration will automatically create entitie
 - **OLA Port**: The port for DMX/OLA API (default: 9090).
 - **Scan Interval**: How often to poll for new data (default: 15s).
 - **Breaker Cooldown**: Minimum seconds between relay toggles (default: 30s).
-- **DMX Testing Mode**: Enable for advanced DMX testing (optional).
+- **DMX Testing Mode**: Enable for advanced DMX testing (optional). This mode is a testing mode for viewing the DMX command to be sent without actually sending it (console only).
 
 ## 🧑‍💻 Contributing
 We love contributions! Please:
@@ -69,4 +71,4 @@ This project is licensed under the GNU GPL v3. See `LICENSE` for details.
 
 **Enjoy your smarter, more open Savant system!**
 
-For help, visit the [GitHub repo](https://github.com/bballdavis/hass-savant-pbc) or open an issue.
+For help, visit the [GitHub repo](https://github.com/bballdavis/HASS-Savant-Energy) or open an issue.
