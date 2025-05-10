@@ -63,7 +63,6 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         self._hass = hass
         self._device = device
         self._cooldown = cooldown
-        self._attr_name = f"{device['name']} Breaker"
         self._attr_unique_id = f"{DOMAIN}_{device['uid']}_breaker"
         self._dmx_uid = calculate_dmx_uid(device["uid"])
         self._dmx_address = None
@@ -80,6 +79,40 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         self._last_commanded_state = self._attr_is_on
         self.async_on_remove(
             self.coordinator.async_add_listener(self._handle_coordinator_update)
+        )
+
+    @property
+    def name(self) -> str:
+        """
+        Return the dynamic friendly name for the entity, based on the current device name.
+        """
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        device_name = self._device["name"]
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    device_name = device["name"]
+                    break
+        return f"{device_name} Breaker"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """
+        Return dynamic DeviceInfo with the current device name.
+        """
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        device_name = self._device["name"]
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    device_name = device["name"]
+                    break
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self._device["uid"]))},
+            name=device_name,
+            serial_number=self._dmx_uid,
+            manufacturer=MANUFACTURER,
+            model=get_device_model(self._device.get("capacity", 0)),
         )
 
     def _get_relay_status_state(self) -> bool | None:

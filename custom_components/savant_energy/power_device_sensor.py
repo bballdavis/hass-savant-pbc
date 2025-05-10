@@ -38,7 +38,6 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._device = device
         self._sensor_type = sensor_type
-        self._attr_name = f"{device['name']} {sensor_type.capitalize()}"
         self._attr_unique_id = unique_id
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, str(device["uid"]))},
@@ -49,6 +48,21 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
         )
         self._attr_native_unit_of_measurement = self._get_unit_of_measurement(sensor_type)
         self._dmx_uid = dmx_uid
+
+    @property
+    def name(self) -> str:
+        """
+        Return the dynamic friendly name for the entity, based on the current device name.
+        """
+        # Try to get the latest device name from coordinator data
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        device_name = self._device["name"]
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    device_name = device["name"]
+                    break
+        return f"{device_name} {self._sensor_type.capitalize()}"
 
     def _get_unit_of_measurement(self, sensor_type: str) -> str | None:
         """
@@ -133,3 +147,23 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
             if device["uid"] == self._device["uid"]:
                 return self._sensor_type in device
         return False
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """
+        Return dynamic DeviceInfo with the current device name.
+        """
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        device_name = self._device["name"]
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    device_name = device["name"]
+                    break
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self._device["uid"]))},
+            name=device_name,
+            serial_number=self._dmx_uid,
+            manufacturer=MANUFACTURER,
+            model=get_device_model(self._device.get("capacity", 0)),
+        )

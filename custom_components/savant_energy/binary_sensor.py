@@ -59,7 +59,6 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
         """
         super().__init__(coordinator)
         self._device = device
-        self._attr_name = f"{device['name']} Relay Status"
         self._attr_unique_id = unique_id
         self._dmx_uid = dmx_uid
         self._device_uid = device["uid"]
@@ -70,6 +69,20 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
             manufacturer=MANUFACTURER,
             model=get_device_model(device.get("capacity", 0)),
         )
+
+    @property
+    def name(self) -> str:
+        """
+        Return the dynamic friendly name for the entity, based on the current device name.
+        """
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        device_name = self._device["name"]
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    device_name = device["name"]
+                    break
+        return f"{device_name} Relay Status"
 
     @property
     def is_on(self) -> Optional[bool]:
@@ -103,3 +116,23 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
         Return the icon for the binary sensor.
         """
         return "mdi:toggle-switch-outline"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """
+        Return dynamic DeviceInfo with the current device name.
+        """
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        device_name = self._device["name"]
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    device_name = device["name"]
+                    break
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self._device["uid"]))},
+            name=device_name,
+            serial_number=self._dmx_uid,
+            manufacturer=MANUFACTURER,
+            model=get_device_model(self._device.get("capacity", 0)),
+        )
