@@ -1,8 +1,10 @@
 # custom_components/energy_snapshot/config_flow.py
-"""Config flow for Savant Energy integration."""
+"""
+Config flow for Savant Energy integration.
+Guides the user through entering connection details and options for setup.
+"""
 
 import logging
-
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -24,19 +26,22 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Savant Energy."""
-
+    """
+    Handle the configuration flow for Savant Energy.
+    Guides the user through entering connection details and options.
+    """
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
-        """Handle the initial step."""
+        """
+        Handle the initial step of the config flow.
+        Validates user input and creates the config entry.
+        """
         errors = {}
         if user_input is not None:
-            # Add validation for address and ports
             address = user_input.get(CONF_ADDRESS)
             port = user_input.get(CONF_PORT)
             ola_port = user_input.get(CONF_OLA_PORT)
-
             if not self._is_valid_address(address):
                 errors[CONF_ADDRESS] = "invalid_address"
             elif not self._is_valid_port(port):
@@ -45,7 +50,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors[CONF_OLA_PORT] = "invalid_port"
             else:
                 return self.async_create_entry(title="Savant Energy", data=user_input)
-
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -53,37 +57,45 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_ADDRESS): str,
                     vol.Required(CONF_PORT, default=2000): int,
                     vol.Required(CONF_OLA_PORT, default=DEFAULT_OLA_PORT): int,
-                    vol.Optional(CONF_DMX_TESTING_MODE, default=False): bool,  # Add testing mode option
+                    vol.Optional(CONF_DMX_TESTING_MODE, default=False): bool,
                 }
             ),
             errors=errors,
         )
 
     def _is_valid_address(self, address):
-        """Validate address input."""
+        """
+        Validate address input (must be non-empty).
+        """
         return address and len(address) > 0
 
     def _is_valid_port(self, port):
-        """Validate port input."""
+        """
+        Validate port input (must be 1-65535).
+        """
         return 1 <= port <= 65535
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        """Get the options flow for this handler."""
+        """
+        Get the options flow handler for this integration.
+        """
         return OptionsFlowHandler()
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle a option flow for Savant Energy."""
-
+    """
+    Handle the options flow for Savant Energy.
+    Allows users to update configuration options after setup.
+    """
     async def async_step_init(self, user_input=None):
-        """Handle options flow."""
+        """
+        Handle the initial step of the options flow.
+        """
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
-
         options_schema = {
-            # Add IP address to options
             vol.Required(
                 CONF_ADDRESS,
                 default=self.config_entry.options.get(
@@ -91,7 +103,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     self.config_entry.data.get(CONF_ADDRESS, ""),
                 ),
             ): str,
-            # Add JSON feed port to options
             vol.Required(
                 CONF_PORT,
                 default=self.config_entry.options.get(
@@ -99,7 +110,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     self.config_entry.data.get(CONF_PORT, 2000),
                 ),
             ): int,
-            # Add OLA port to options
             vol.Required(
                 CONF_OLA_PORT,
                 default=self.config_entry.options.get(
@@ -123,7 +133,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                 ),
             ): int,
-            # Add testing mode to options with a default of False if not set
             vol.Optional(
                 CONF_DMX_TESTING_MODE,
                 default=self.config_entry.options.get(
@@ -132,7 +141,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 ),
             ): bool,
         }
-
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(options_schema),

@@ -1,5 +1,7 @@
 """Energy Device Sensor for Savant Energy.
 Provides power and voltage sensor entities for each relay device.
+
+All classes and functions are now documented for clarity and open source maintainability.
 """
 
 import logging
