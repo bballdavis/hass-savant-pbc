@@ -6,7 +6,6 @@ from homeassistant.helpers.entity import DeviceInfo
 
 from .const import DOMAIN, MANUFACTURER
 from .models import get_device_model
-from .energy_stats_sensor import EnergyStatsSensor
 from .energy_device_sensor import EnergyDeviceSensor
 from .dmx_address_sensor import DMXAddressSensor
 from .utils import calculate_dmx_uid
@@ -33,7 +32,6 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             demands_str,
             len(demands_str),
         )
-        energy_stats_sensors = []
         for device in snapshot_data["presentDemands"]:
             uid = device["uid"]
             dmx_uid = calculate_dmx_uid(uid)
@@ -77,23 +75,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     dmx_uid,
                 )
             )
-            
-            # Predictable entity_id for the power sensor
-            power_entity_id = f"sensor.savantenergy_{uid}_power"
-            energy_stats_sensors.append(
-                EnergyStatsSensor(
-                    hass,
-                    power_entity_id,
-                    "Energy",
-                    f"SavantEnergy_{uid}_energy",
-                    device_info,
-                )
-            )
-            
         # Add all entities at once
-        async_add_entities(entities + energy_stats_sensors)
-        _LOGGER.debug("Added %d sensor entities (including energy stats sensors)", len(entities + energy_stats_sensors))
-        
+        async_add_entities(entities)
+        _LOGGER.debug("Added %d sensor entities", len(entities))
         return True
     else:
         _LOGGER.debug("No presentDemands data found in coordinator")

@@ -80,11 +80,11 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
                 if device["uid"] == self._device["uid"]:
                     # Get value based on sensor type
                     value = device.get(self._sensor_type)
-                    
-                    # Handle power value (convert kW to W for proper energy calculation)
+                      # Handle power value (convert kW to W for proper energy calculation)
                     if self._sensor_type == "power" and value is not None:
                         try:
-                            return float(value) * 1000.0  # Convert kW to W
+                            # Convert kW to W and round to 0 decimal places
+                            return round(float(value) * 1000.0)  # Convert kW to W and round to nearest whole number
                         except (ValueError, TypeError):
                             _LOGGER.error(
                                 "Invalid power value %s for device %s", 
