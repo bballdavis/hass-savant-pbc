@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "documentation": "https://github.com/bballdavis/hass-savant-pbc",
   "requirements": [],
+  "dependencies": ["frontend", "lovelace"],
   "codeowners": ["@bballdavis"],
   "config_flow": true,
   "iot_class": "local_polling",

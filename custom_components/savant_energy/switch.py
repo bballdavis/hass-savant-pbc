@@ -16,7 +16,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN, MANUFACTURER, DEFAULT_OLA_PORT, CONF_DMX_TESTING_MODE
 from .models import get_device_model
-from .utils import calculate_dmx_uid, async_set_dmx_values, async_get_dmx_address
+from .utils import calculate_dmx_uid, async_set_dmx_values, async_get_dmx_address, slugify
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,14 +34,17 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         config_entry.data.get(CONF_SWITCH_COOLDOWN, DEFAULT_SWITCH_COOLDOWN),
     )
     entities = []
-    snapshot_data = coordinator.data.get("snapshot_data", {})
-    if (
-        snapshot_data
-        and isinstance(snapshot_data, dict)
-        and "presentDemands" in snapshot_data
-    ):
-        for device in snapshot_data["presentDemands"]:
-            entities.append(EnergyDeviceSwitch(hass, coordinator, device, cooldown))
+    # Always trigger a refresh to ensure polling starts
+    await coordinator.async_request_refresh()
+    if coordinator.data is not None:
+        snapshot_data = coordinator.data.get("snapshot_data", {})
+        if (
+            snapshot_data
+            and isinstance(snapshot_data, dict)
+            and "presentDemands" in snapshot_data
+        ):
+            for device in snapshot_data["presentDemands"]:
+                entities.append(EnergyDeviceSwitch(hass, coordinator, device, cooldown))
     async_add_entities(entities)
 
 
@@ -63,7 +66,6 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         self._hass = hass
         self._device = device
         self._cooldown = cooldown
-        self._attr_name = f"{device['name']} Breaker"
         self._attr_unique_id = f"{DOMAIN}_{device['uid']}_breaker"
         self._dmx_uid = calculate_dmx_uid(device["uid"])
         self._dmx_address = None
@@ -82,14 +84,31 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
             self.coordinator.async_add_listener(self._handle_coordinator_update)
         )
 
+    @property
+    def _current_device_name(self):
+        """Get the latest device name from coordinator data by UID."""
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    return device["name"]
+        return self._device["name"]
+
+    # Do NOT override entity_id. Home Assistant manages entity_id and expects it to be settable.
+    # Only the name property is dynamic, so the UI/friendly_name updates on device rename.
+    # unique_id remains stable and is used for entity tracking.
+    @property
+    def name(self):
+        return f"{self._current_device_name} Breaker"
+
     def _get_relay_status_state(self) -> bool | None:
         """
         Get the state of the switch based on the relay status sensor, or None if unknown.
         """
-        device_name = self._device['name']
         for binary_sensor in self._hass.states.async_all("binary_sensor"):
-            if (binary_sensor.attributes.get("friendly_name") and 
-                f"{device_name} Relay Status" == binary_sensor.attributes.get("friendly_name")):
+            if (
+                binary_sensor.attributes.get("uid") == self._device["uid"]
+            ):
                 if binary_sensor.state.lower() == "on":
                     return True
                 elif binary_sensor.state.lower() == "off":
@@ -101,7 +120,7 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         """
         Try to get the DMX address from the sensor entity for this device.
         """
-        dmx_address_entity_id = f"sensor.{self._device['name'].lower().replace(' ', '_')}_dmx_address"
+        dmx_address_entity_id = f"sensor.{slugify(self._current_device_name)}_dmx_address"
         alternative_entity_id = f"sensor.savant_energy_{self._device['uid']}_dmx_address"
         state = self._hass.states.get(dmx_address_entity_id)
         if not state or state.state in ('unknown', 'unavailable'):
@@ -213,10 +232,10 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         """
         if self._attr_is_on is not None:
             return self._attr_is_on
-        device_name = self._device['name']
         for binary_sensor in self._hass.states.async_all("binary_sensor"):
-            if (binary_sensor.attributes.get("friendly_name") and 
-                f"{device_name} Relay Status" == binary_sensor.attributes.get("friendly_name")):
+            if (
+                binary_sensor.attributes.get("uid") == self._device["uid"]
+            ):
                 if binary_sensor.state.lower() == "on":
                     return True
                 elif binary_sensor.state.lower() == "off":
@@ -292,11 +311,11 @@ class EnergyDeviceSwitch(CoordinatorEntity, SwitchEntity):
         """
         Handle updated data from the coordinator.
         """
-        device_name = self._device['name']
         new_state = None
         for binary_sensor in self._hass.states.async_all("binary_sensor"):
-            if (binary_sensor.attributes.get("friendly_name") and 
-                f"{device_name} Relay Status" == binary_sensor.attributes.get("friendly_name")):
+            if (
+                binary_sensor.attributes.get("uid") == self._device["uid"]
+            ):
                 new_state = binary_sensor.state.lower() == "on"
                 break
         if new_state is not None and new_state != self._last_commanded_state:

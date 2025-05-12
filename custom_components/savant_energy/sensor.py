@@ -27,64 +27,69 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entities = []
     power_sensors = []  # Track power sensors for utility meter creation
 
-    snapshot_data = coordinator.data.get("snapshot_data", {})
-    if (
-        snapshot_data
-        and isinstance(snapshot_data, dict)
-        and "presentDemands" in snapshot_data
-    ):
-        demands_str = str(snapshot_data["presentDemands"])
-        _LOGGER.debug(
-            "Processing presentDemands: %.50s... (total length: %d)",
-            demands_str,
-            len(demands_str),
-        )
-        for device in snapshot_data["presentDemands"]:
-            uid = device["uid"]
-            dmx_uid = calculate_dmx_uid(uid)
+    # Always trigger a refresh to ensure polling starts
+    await coordinator.async_request_refresh()
+
+    # Defensive: Only try to create entities if coordinator.data is not None
+    if coordinator.data is not None:
+        snapshot_data = coordinator.data.get("snapshot_data", {})
+        if (
+            snapshot_data
+            and isinstance(snapshot_data, dict)
+            and "presentDemands" in snapshot_data
+        ):
+            demands_str = str(snapshot_data["presentDemands"])
             _LOGGER.debug(
-                "Creating sensors for device: %s with DMX UID: %s", device, dmx_uid
+                "Processing presentDemands: %.50s... (total length: %d)",
+                demands_str,
+                len(demands_str),
             )
-
-            # Create device info once for all sensors
-            device_info = DeviceInfo(
-                identifiers={(DOMAIN, str(device["uid"]))},
-                name=device["name"],
-                serial_number=dmx_uid,
-                manufacturer=MANUFACTURER,
-                model=get_device_model(device.get("capacity", 0)),
-            )
-
-            # Create power sensor
-            power_sensor = EnergyDeviceSensor(
-                coordinator, device, "power", f"SavantEnergy_{uid}_power", dmx_uid
-            )
-            entities.append(power_sensor)
-            power_sensors.append(power_sensor)
-
-            # Create voltage sensor
-            entities.append(
-                EnergyDeviceSensor(
-                    coordinator,
-                    device,
-                    "voltage",
-                    f"SavantEnergy_{uid}_voltage",
-                    dmx_uid,
+            for device in snapshot_data["presentDemands"]:
+                uid = device["uid"]
+                dmx_uid = calculate_dmx_uid(uid)
+                _LOGGER.debug(
+                    "Creating sensors for device: %s with DMX UID: %s", device, dmx_uid
                 )
-            )
-            
-            # Create DMX address sensor
-            entities.append(
-                DMXAddressSensor(
-                    coordinator,
-                    device,
-                    f"SavantEnergy_{uid}_dmx_address",
-                    dmx_uid,
+
+                # Create device info once for all sensors
+                device_info = DeviceInfo(
+                    identifiers={(DOMAIN, str(device["uid"]))},
+                    name=device["name"],
+                    serial_number=dmx_uid,
+                    manufacturer=MANUFACTURER,
+                    model=get_device_model(device.get("capacity", 0)),
                 )
-            )
-        # Add all entities at once
-        async_add_entities(entities)
-        _LOGGER.debug("Added %d sensor entities", len(entities))
-        return True
-    else:
-        _LOGGER.debug("No presentDemands data found in coordinator")
+
+                # Create power sensor
+                power_sensor = EnergyDeviceSensor(
+                    coordinator, device, "power", f"SavantEnergy_{uid}_power", dmx_uid
+                )
+                entities.append(power_sensor)
+                power_sensors.append(power_sensor)
+
+                # Create voltage sensor
+                entities.append(
+                    EnergyDeviceSensor(
+                        coordinator,
+                        device,
+                        "voltage",
+                        f"SavantEnergy_{uid}_voltage",
+                        dmx_uid,
+                    )
+                )
+                
+                # Create DMX address sensor
+                entities.append(
+                    DMXAddressSensor(
+                        coordinator,
+                        device,
+                        f"SavantEnergy_{uid}_dmx_address",
+                        dmx_uid,
+                    )
+                )
+            # Add all entities at once
+            async_add_entities(entities)
+            _LOGGER.debug("Added %d sensor entities", len(entities))
+            return True
+        else:
+            _LOGGER.debug("No presentDemands data found in coordinator")

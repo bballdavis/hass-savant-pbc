@@ -17,6 +17,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
 from .models import get_device_model
+from .utils import slugify
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
         self._device = device
         self._sensor_type = sensor_type
         self._attr_name = f"{device['name']} {sensor_type.capitalize()}"
+        self._slug_name = slugify(device["name"])
         self._attr_unique_id = unique_id
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, str(device["uid"]))},
@@ -61,6 +63,28 @@ class EnergyDeviceSensor(CoordinatorEntity, SensorEntity):
                 return "W"
             case _:
                 return None
+
+    @property
+    def _current_device_name(self):
+        """
+        Fetch the current device name by UID from coordinator data.
+        """
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    return device["name"]
+        return self._device["name"]
+
+    # Do NOT override entity_id. Home Assistant manages entity_id and expects it to be settable.
+    # Only the name property is dynamic, so the UI/friendly_name updates on device rename.
+    # unique_id remains stable and is used for entity tracking.
+    @property
+    def name(self):
+        """
+        Return the name of the sensor using the latest device name.
+        """
+        return f"{self._current_device_name} {self._sensor_type.capitalize()}"
 
     @property
     def state_class(self) -> SensorStateClass | None:

@@ -9,6 +9,7 @@ Welcome to the **Savant Energy** integration for Home Assistant! This project br
 - **Relay Binary sensors** for relay status
 - **All Loads On Button** to quickly turn all loads on
 - **DMX address sensors** for controlling individual breakers
+- **Custom Lovelace card** for managing energy scenes
 
 ## 🛠️ Installation (via HACS)
 1. **Add the repository to HACS**:
@@ -37,6 +38,33 @@ Once installed and configured, the integration will automatically create entitie
   - **All Loads On**: Instantly turns on all relays.
   - **API Command Log**: Logs a sample DMX API command for troubleshooting.
   - **API Stats**: Shows DMX API health and statistics.
+
+## 📱 Savant Energy Scenes Card
+
+### Using the Card
+The integration includes a custom Lovelace card for managing Savant Energy scenes. To use it:
+
+1. Edit any dashboard
+2. Click "Add Card"
+3. Choose "Manual" at the bottom
+4. Enter the following YAML:
+```yaml
+type: custom:savant-energy-scenes-card
+```
+
+### Card Features
+- Create, edit, and delete Savant Energy scenes
+- Control which relays are active in each scene
+- Simple and intuitive interface for managing scenes
+
+### Troubleshooting the Card
+If the card doesn't load with an error like "Custom element doesn't exist: savant-energy-scenes-card":
+
+1. Verify the integration is properly set up
+2. Check that the JS file exists in `/config/www/savant-energy-scenes-card.js`
+3. Verify resource registration: Settings > Dashboards > Resources
+4. If needed, add the resource manually: `/local/savant-energy-scenes-card.js` with type `module`
+5. Clear your browser cache and reload Home Assistant
 
 ## 📝 Configuration Options
 - **IP Address**: The address of your Savant controller.

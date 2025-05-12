@@ -30,23 +30,26 @@ async def async_setup_entry(
     Adds diagnostic and control buttons if presentDemands data is available.
     """
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    snapshot_data = coordinator.data.get("snapshot_data", {})
-    if (
-        snapshot_data
-        and isinstance(snapshot_data, dict)
-        and "presentDemands" in snapshot_data
-    ):
-        async_add_entities(
-            [
-                SavantAllLoadsButton(hass, coordinator),
-                SavantApiCommandLogButton(hass, coordinator),
-                SavantApiStatsButton(hass, coordinator),
-            ]
-        )
-    else:
-        _LOGGER.warning(
-            "No presentDemands data found in coordinator snapshot_data, buttons not added"
-        )
+    # Always trigger a refresh to ensure polling starts
+    await coordinator.async_request_refresh()
+    if coordinator.data is not None:
+        snapshot_data = coordinator.data.get("snapshot_data", {})
+        if (
+            snapshot_data
+            and isinstance(snapshot_data, dict)
+            and "presentDemands" in snapshot_data
+        ):
+            async_add_entities(
+                [
+                    SavantAllLoadsButton(hass, coordinator),
+                    SavantApiCommandLogButton(hass, coordinator),
+                    SavantApiStatsButton(hass, coordinator),
+                ]
+            )
+        else:
+            _LOGGER.warning(
+                "No presentDemands data found in coordinator snapshot_data, buttons not added"
+            )
 
 
 class SavantAllLoadsButton(ButtonEntity):

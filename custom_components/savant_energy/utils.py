@@ -60,6 +60,18 @@ def calculate_dmx_uid(uid: str) -> str:
     return base_uid
 
 
+def slugify(name: str) -> str:
+    """
+    Sanitize a string to be used in an entity_id: lowercase, underscores, no special chars, no double underscores.
+    """
+    import re
+    name = name.lower().strip()
+    name = re.sub(r'[^a-z0-9]+', '_', name)
+    name = re.sub(r'_+', '_', name)
+    name = name.strip('_')
+    return name
+
+
 async def async_get_dmx_address(ip_address: str, ola_port: int, universe: int, dmx_uid: str) -> Optional[int]:
     """
     Get DMX address for a device using the RDM API.

@@ -13,7 +13,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
 from .models import get_device_model
-from .utils import async_get_dmx_address
+from .utils import async_get_dmx_address, slugify
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +36,6 @@ class DMXAddressSensor(CoordinatorEntity, SensorEntity):
         """
         super().__init__(coordinator)
         self._device = device
-        self._attr_name = f"{device['name']} DMX Address"
         self._attr_unique_id = unique_id
         self._dmx_uid = dmx_uid
         self._dmx_address = None  # Will be populated on first update
@@ -48,6 +47,23 @@ class DMXAddressSensor(CoordinatorEntity, SensorEntity):
             manufacturer=MANUFACTURER,
             model=get_device_model(device.get("capacity", 0)),
         )
+        self._slug_name = slugify(device["name"])
+
+    @property
+    def _current_device_name(self):
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    return device["name"]
+        return self._device["name"]
+
+    # Do NOT override entity_id. Home Assistant manages entity_id and expects it to be settable.
+    # Only the name property is dynamic, so the UI/friendly_name updates on device rename.
+    # unique_id remains stable and is used for entity tracking.
+    @property
+    def name(self):
+        return f"{self._current_device_name} DMX Address"
 
     async def async_added_to_hass(self):
         """
