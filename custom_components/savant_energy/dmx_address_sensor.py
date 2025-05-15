@@ -68,10 +68,20 @@ class DMXAddressSensor(CoordinatorEntity, SensorEntity):
     async def async_added_to_hass(self):
         """
         Called when entity is added to Home Assistant.
-        Fetches the DMX address from the API.
+        Fetches the DMX address from the API, respecting the DMX Address Cache option.
         """
         await super().async_added_to_hass()
-        await self._fetch_dmx_address()
+        # Check config option for DMX address cache
+        cache_enabled = False
+        config_entry = getattr(self.coordinator, 'config_entry', None)
+        if config_entry:
+            cache_enabled = config_entry.options.get(
+                "dmx_address_cache",
+                config_entry.data.get("dmx_address_cache", False)
+            )
+        # Only fetch if not cached or cache is disabled
+        if not cache_enabled or self._dmx_address is None:
+            await self._fetch_dmx_address()
 
     async def _fetch_dmx_address(self):
         """

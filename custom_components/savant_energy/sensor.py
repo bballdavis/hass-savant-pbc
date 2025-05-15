@@ -5,8 +5,9 @@ All classes and functions are now documented for clarity and open source maintai
 """
 
 import logging
+import asyncio
 
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo  # type: ignore
 
 from .const import DOMAIN, MANUFACTURER
 from .models import get_device_model
@@ -26,6 +27,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     entities = []
     power_sensors = []  # Track power sensors for utility meter creation
+    dmx_address_sensors = []  # Track DMX address sensors for concurrency
 
     # Always trigger a refresh to ensure polling starts
     await coordinator.async_request_refresh()
@@ -48,7 +50,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 uid = device["uid"]
                 dmx_uid = calculate_dmx_uid(uid)
                 _LOGGER.debug(
-                    "Creating sensors for device: %s with DMX UID: %s", device, dmx_uid
+                    "Creating sensors for Savant Serial: %s", dmx_uid
                 )
 
                 # Create device info once for all sensors
@@ -79,17 +81,19 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 )
                 
                 # Create DMX address sensor
-                entities.append(
-                    DMXAddressSensor(
-                        coordinator,
-                        device,
-                        f"SavantEnergy_{uid}_dmx_address",
-                        dmx_uid,
-                    )
+                dmx_sensor = DMXAddressSensor(
+                    coordinator,
+                    device,
+                    f"SavantEnergy_{uid}_dmx_address",
+                    dmx_uid,
                 )
+                dmx_address_sensors.append(dmx_sensor)
+                entities.append(dmx_sensor)
+
             # Add all entities at once
             async_add_entities(entities)
             _LOGGER.debug("Added %d sensor entities", len(entities))
+
             return True
         else:
             _LOGGER.debug("No presentDemands data found in coordinator")

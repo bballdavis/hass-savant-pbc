@@ -1,4 +1,5 @@
 {
     "name": "Savant Energy",
-    "render_readme": true
-  }
+    "render_readme": true,
+    "type": "integration"
+}

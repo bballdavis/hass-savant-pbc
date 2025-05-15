@@ -18,8 +18,14 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_SWITCH_COOLDOWN,
     CONF_DMX_TESTING_MODE,
+    CONF_DMX_ADDRESS_CACHE,
+    CONF_CLEAR_RELOAD_SCENES_ON_STARTUP,
     DEFAULT_SWITCH_COOLDOWN,
     DEFAULT_OLA_PORT,
+    DEFAULT_CLEAR_RELOAD_SCENES_ON_STARTUP,
+    DEFAULT_DMX_TESTING_MODE,
+    DEFAULT_DMX_ADDRESS_CACHE,
+    DEFAULT_DISABLE_SCENE_BUILDER,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,10 +63,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_ADDRESS): str,
                     vol.Required(CONF_PORT, default=2000): int,
                     vol.Required(CONF_OLA_PORT, default=DEFAULT_OLA_PORT): int,
-                    vol.Optional(CONF_DMX_TESTING_MODE, default=False): bool,
+                    vol.Optional(CONF_DMX_TESTING_MODE, default=DEFAULT_DMX_TESTING_MODE): bool,
+                    vol.Optional(CONF_DMX_ADDRESS_CACHE, default=DEFAULT_DMX_ADDRESS_CACHE): bool,
+                    vol.Optional(CONF_CLEAR_RELOAD_SCENES_ON_STARTUP, default=DEFAULT_CLEAR_RELOAD_SCENES_ON_STARTUP): bool,
+                    vol.Optional("disable_scene_builder", default=DEFAULT_DISABLE_SCENE_BUILDER): bool,
                 }
             ),
             errors=errors,
+            description_placeholders={},
         )
 
     def _is_valid_address(self, address):
@@ -137,11 +147,33 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_DMX_TESTING_MODE,
                 default=self.config_entry.options.get(
                     CONF_DMX_TESTING_MODE,
-                    self.config_entry.data.get(CONF_DMX_TESTING_MODE, False),
+                    self.config_entry.data.get(CONF_DMX_TESTING_MODE, DEFAULT_DMX_TESTING_MODE),
+                ),
+            ): bool,
+            vol.Optional(
+                CONF_DMX_ADDRESS_CACHE,
+                default=self.config_entry.options.get(
+                    CONF_DMX_ADDRESS_CACHE,
+                    self.config_entry.data.get(CONF_DMX_ADDRESS_CACHE, DEFAULT_DMX_ADDRESS_CACHE),
+                ),
+            ): bool,
+            vol.Optional(
+                CONF_CLEAR_RELOAD_SCENES_ON_STARTUP,
+                default=self.config_entry.options.get(
+                    CONF_CLEAR_RELOAD_SCENES_ON_STARTUP,
+                    self.config_entry.data.get(CONF_CLEAR_RELOAD_SCENES_ON_STARTUP, DEFAULT_CLEAR_RELOAD_SCENES_ON_STARTUP),
+                ),
+            ): bool,
+            vol.Optional(
+                "disable_scene_builder",
+                default=self.config_entry.options.get(
+                    "disable_scene_builder",
+                    self.config_entry.data.get("disable_scene_builder", DEFAULT_DISABLE_SCENE_BUILDER),
                 ),
             ): bool,
         }
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(options_schema),
+            description_placeholders={},
         )

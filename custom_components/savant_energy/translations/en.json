@@ -1,0 +1,8 @@
+{
+  "options": {
+    "clear_reload_scenes_on_startup": "Scene Hard Reset",
+    "clear_reload_scenes_on_startup_description": "Delete all integration scenes from Home Assistant and rebuild from storage on startup.",
+    "dmx_testing_mode": "DMX Testing Mode",
+    "dmx_testing_mode_description": "Enable for advanced DMX testing (console only)."
+  }
+}
