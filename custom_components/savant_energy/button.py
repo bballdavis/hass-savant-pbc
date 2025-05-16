@@ -21,7 +21,7 @@ from .scene import SavantSceneStorage, SavantSceneManager
 
 _LOGGER = logging.getLogger(__name__)
 
-ALL_LOADS_BUTTON_NAME: Final = "All Loads On"
+ALL_LOADS_BUTTON_NAME: Final = "All Breakers On Scene"
 DEFAULT_CHANNEL_COUNT: Final = 50
 
 

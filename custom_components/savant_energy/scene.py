@@ -378,16 +378,22 @@ class SavantSceneStorage:
             _LOGGER.info(f"[Storage] Scenes saved to storage.")
 
     async def async_create_scene(self, name: str, relay_states: Dict[str, bool]) -> str:
-        """Create a new scene and save it to storage."""
+        """Create a new scene and save it to storage, with robust protection against data loss."""
         async with self._lock:
+            # Always load the latest state from disk before modifying
+            data = await self.store.async_load()
+            disk_scenes = (data or {}).get("scenes", {})
+            if not disk_scenes and self._last_saved_state:
+                _LOGGER.warning("[Storage] Disk scenes empty but _last_saved_state is not. Restoring from backup.")
+                disk_scenes = dict(self._last_saved_state)
+            self.scenes = dict(disk_scenes)
+
             scene_id = f"savant_{slugify(name)}"
             if scene_id in self.scenes:
                 raise HomeAssistantError(f"Scene {name} already exists")
-                return  # Defensive: will never be reached, but clarifies intent
             for existing_scene in self.scenes.values():
                 if existing_scene["name"].strip().lower() == name.strip().lower():
                     raise HomeAssistantError(f"Scene {name} already exists")
-                    return  # Defensive: will never be reached, but clarifies intent
             relay_states = relay_states or {}
             all_entity_ids = self.hass.states.async_entity_ids("switch")
             for entity_id_str in all_entity_ids:
@@ -401,6 +407,12 @@ class SavantSceneStorage:
                 ):
                     relay_states[entity_id_str] = True
             self.scenes[scene_id] = {"name": name, "relay_states": relay_states or {}}
+
+            # Defensive: do not allow save if new state is much smaller than previous (except for delete)
+            if self._last_saved_state and len(self.scenes) < len(self._last_saved_state) and len(self._last_saved_state) > 1:
+                _LOGGER.error(f"[Storage] Refusing to save: new scene count ({len(self.scenes)}) is less than previous ({len(self._last_saved_state)}). Aborting to prevent data loss.")
+                raise HomeAssistantError("Refusing to overwrite scenes: possible data loss detected.")
+
             await self.store.async_save({"scenes": self.scenes})
             self._last_saved_state = dict(self.scenes)
             _LOGGER.info(
@@ -414,17 +426,18 @@ class SavantSceneStorage:
         name: Optional[str] = None,
         relay_states: Optional[Dict[str, bool]] = None,
     ) -> None:
-        """Update an existing scene in the JSON file.
-        If the name changes, the entity in Home Assistant will be updated.
-        """
+        """Update an existing scene in the JSON file, with robust protection against data loss."""
         async with self._lock:
             data = await self.store.async_load()
-            self.scenes = (data or {}).get("scenes", {})
+            disk_scenes = (data or {}).get("scenes", {})
+            if not disk_scenes and self._last_saved_state:
+                _LOGGER.warning("[Storage] Disk scenes empty but _last_saved_state is not. Restoring from backup.")
+                disk_scenes = dict(self._last_saved_state)
+            self.scenes = dict(disk_scenes)
             if scene_id not in self.scenes:
                 raise HomeAssistantError(f"Scene {scene_id} not found")
             scene = self.scenes[scene_id]
             old_name = scene["name"]
-            name_changed = False
             if name is not None and name != old_name:
                 for existing_id, existing_scene_data in self.scenes.items():
                     if (
@@ -436,7 +449,6 @@ class SavantSceneStorage:
                             f"A scene with the name '{name}' already exists."
                         )
                 scene["name"] = name
-                name_changed = True
                 _LOGGER.debug(
                     f"[Storage] Scene '{scene_id}' name changed from '{old_name}' to '{name}'."
                 )
@@ -445,21 +457,33 @@ class SavantSceneStorage:
                 _LOGGER.debug(
                     f"[Storage] Scene '{scene_id}' relay_states updated to: {relay_states}"
                 )
+            # Defensive: do not allow save if new state is much smaller than previous (except for delete)
+            if self._last_saved_state and len(self.scenes) < len(self._last_saved_state) and len(self._last_saved_state) > 1:
+                _LOGGER.error(f"[Storage] Refusing to save: new scene count ({len(self.scenes)}) is less than previous ({len(self._last_saved_state)}). Aborting to prevent data loss.")
+                raise HomeAssistantError("Refusing to overwrite scenes: possible data loss detected.")
             await self.store.async_save({"scenes": self.scenes})
             self._last_saved_state = dict(self.scenes)
             _LOGGER.info(f"[Storage] Scene '{scene_id}' updated and saved to storage.")
 
     async def async_delete_scene(self, scene_id: str) -> None:
-        """Delete a scene from storage."""
+        """Delete a scene from storage, with robust protection against data loss."""
         _LOGGER.debug(f"[Storage] Attempting to delete scene: {scene_id}")
         async with self._lock:
             data = await self.store.async_load()
-            self.scenes = (data or {}).get("scenes", {})
+            disk_scenes = (data or {}).get("scenes", {})
+            if not disk_scenes and self._last_saved_state:
+                _LOGGER.warning("[Storage] Disk scenes empty but _last_saved_state is not. Restoring from backup.")
+                disk_scenes = dict(self._last_saved_state)
+            self.scenes = dict(disk_scenes)
             if scene_id in self.scenes:
                 _LOGGER.debug(
                     f"[Storage] Found scene {scene_id} in storage. Current scenes before delete: {json.dumps(self.scenes)}"
                 )
                 del self.scenes[scene_id]
+                # Defensive: do not allow save if new state is much smaller than previous (except for delete)
+                if self._last_saved_state and len(self.scenes) < len(self._last_saved_state) - 1 and len(self._last_saved_state) > 1:
+                    _LOGGER.error(f"[Storage] Refusing to save: new scene count ({len(self.scenes)}) is much less than previous ({len(self._last_saved_state)}). Aborting to prevent data loss.")
+                    raise HomeAssistantError("Refusing to overwrite scenes: possible data loss detected.")
                 await self.store.async_save({"scenes": self.scenes})
                 self._last_saved_state = dict(self.scenes)
                 _LOGGER.info(
