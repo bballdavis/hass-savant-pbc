@@ -8,25 +8,19 @@ from datetime import timedelta, datetime
 import shutil
 import os
 import traceback
+import json
+import uuid
 
 import homeassistant.helpers.config_validation as cv # type: ignore
 import voluptuous as vol # type: ignore
 
 from homeassistant.config_entries import ConfigEntry # type: ignore
 from homeassistant.core import HomeAssistant # type: ignore
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator  # type: ignore
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator # type: ignore
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry # type: ignore
 from homeassistant.helpers.translation import async_get_translations # type: ignore
 
-from .const import (
-    DOMAIN,
-    CONF_ADDRESS,
-    CONF_PORT,
-    CONF_OLA_PORT,
-    CONF_SCAN_INTERVAL,
-    DEFAULT_OLA_PORT,
-    PLATFORMS,
-)
+from .const import DOMAIN, PLATFORMS, CONF_ADDRESS, CONF_PORT, CONF_SCAN_INTERVAL, DEFAULT_OLA_PORT
 from .snapshot_data import get_current_energy_snapshot
 from .utils import async_get_all_dmx_status, DMX_CACHE_SECONDS
 
@@ -71,7 +65,7 @@ class SavantEnergyCoordinator(DataUpdateCoordinator):
         super().__init__(
             hass,
             logger=_LOGGER,
-            name="SavantEnergyCoordinator",
+            name=DOMAIN,
             update_interval=timedelta(seconds=scan_interval),
         )
         self.address = entry.data[CONF_ADDRESS]
@@ -142,8 +136,8 @@ async def _async_register_frontend_resource(hass: HomeAssistant) -> None:
     # Always patch .storage/lovelace_resources file (storage mode)
     storage_path = hass.config.path(".storage", "lovelace_resources")
     _LOGGER.debug(f"[LovReg] Storage-mode fallback, patching storage file at: {storage_path}")
+    
     def _patch_storage() -> None:
-        import json, os, uuid
         if not os.path.exists(storage_path):
             _LOGGER.debug(f"[LovReg] Storage file not found, skipping patch: {storage_path}")
             return
@@ -167,11 +161,13 @@ async def _async_register_frontend_resource(hass: HomeAssistant) -> None:
     _LOGGER.info(f"Patched .storage/lovelace_resources to include resource: {resource_url}")
 
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the Savant Energy component from yaml configuration."""
+    hass.data.setdefault(DOMAIN, {})
+    return True
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """
-    Set up Savant Energy from a config entry.
-    Registers the coordinator and forwards setup to all platforms.
-    """
+    """Set up Savant Energy from a config entry."""
     # Preload translations for config options (for UI friendly names)
     await async_get_translations(hass, hass.config.language, "options", DOMAIN)
 
@@ -195,28 +191,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as copy_err:
             _LOGGER.error(f"Error copying Lovelace card to www folder: {copy_err}")
 
-    # Resource management is now handled by HACS; no manual asset copy or registration here.
-    # Remove custom logic—HACS will deploy the lovelace card and register the resource.
-
     # Create coordinator and proceed with normal setup
     coordinator = SavantEnergyCoordinator(hass, entry)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     
     # Get initial data before setting up platforms
     _LOGGER.info("Fetching initial data from Savant Energy controller")
     await coordinator.async_config_entry_first_refresh()
     
+    hass.data[DOMAIN][entry.entry_id] = coordinator
+    
     if coordinator.data is None or not coordinator.data.get("snapshot_data"):
         _LOGGER.warning("Initial data fetch failed or returned no data - entities may be unavailable")
     
-    # Register platforms
+    # Use PLATFORMS from const.py
     _LOGGER.info("Setting up Savant Energy platforms")
-    platforms = ["sensor", "switch", "button", "binary_sensor"]
+    setup_platforms = list(PLATFORMS)  # Make a copy to avoid modifying the original
     if not disable_scene_builder:
-        platforms.append("scene")
-    await hass.config_entries.async_forward_entry_setups(
-        entry, platforms
-    )
+        setup_platforms.append("scene")
+    
+    await hass.config_entries.async_forward_entry_setups(entry, setup_platforms)
     
     # Ensure frontend resource registration
     if not disable_scene_builder:
@@ -228,12 +221,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """
-    Unload a config entry and all associated platforms.
-    """
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS + ["scene"])
+    """Unload a config entry."""
+    # Use the same platform logic as in setup
+    disable_scene_builder = entry.options.get(
+        "disable_scene_builder",
+        entry.data.get("disable_scene_builder", False)
+    )
+    
+    unload_platforms = list(PLATFORMS)
+    if not disable_scene_builder:
+        unload_platforms.append("scene")
+        
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, unload_platforms)
+    
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
+        
     return unload_ok
 
 

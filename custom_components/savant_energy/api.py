@@ -5,9 +5,9 @@ Handles all create, update, delete, and query operations for scenes.
 
 import logging
 import json
-import voluptuous as vol
-from homeassistant.exceptions import HomeAssistantError
-from .const import DOMAIN
+import voluptuous as vol # type: ignore
+from homeassistant.exceptions import HomeAssistantError # type: ignore
+from .const import DOMAIN 
 from .utils import slugify
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,22 +32,18 @@ def register_scene_services(hass, scene_manager, storage, coordinator):
         relay_states = call.data["relay_states"]
         try:
             scene_id = await scene_manager.async_create_scene(name, relay_states)
-            await hass.services.async_call(
-                "scene",
-                "create",
-                {
-                    "scene_id": scene_id,
-                    "entities": relay_states,
-                },
-                blocking=True
-            )
-            await storage.async_load()  # Ensure latest data
-            resp = {"status": "ok", "scene_id": scene_id}
-            _LOGGER.info(f"[API] create_scene response: {json.dumps(resp)}")
-            return resp
+        except HomeAssistantError as hae:
+            _LOGGER.warning(f"[API] Scene creation failed: {hae}")
+            error_message = str(hae)
+            error_type = "scene_exists" if "already exists" in error_message.lower() else "homeassistant_error"
+            return {"status": "error", "message": error_message, "error": error_type}
         except Exception as e:
             _LOGGER.error(f"[API] Error creating scene '{name}': {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
+        await storage.async_load()  # Only called if no exception
+        resp = {"status": "ok", "scene_id": scene_id}
+        _LOGGER.info(f"[API] create_scene response: {json.dumps(resp)}")
+        return resp
 
     async def handle_update_scene(call):
         _LOGGER.debug(f"[API] update_scene called with data: {call.data}")
@@ -56,15 +52,6 @@ def register_scene_services(hass, scene_manager, storage, coordinator):
         relay_states = call.data.get("relay_states")
         try:
             await scene_manager.async_update_scene(scene_id, name, relay_states)
-            await hass.services.async_call(
-                "scene",
-                "update",
-                {
-                    "scene_id": scene_id,
-                    "entities": relay_states,
-                },
-                blocking=True
-            )
             await storage.async_load()
             resp = {"status": "ok", "scene_id": scene_id}
             _LOGGER.info(f"[API] update_scene response: {json.dumps(resp)}")
@@ -78,8 +65,6 @@ def register_scene_services(hass, scene_manager, storage, coordinator):
         scene_id = call.data["scene_id"]
         try:
             await scene_manager.async_delete_scene(scene_id)
-            entity_id = f"scene.{scene_id}" if not scene_id.startswith("scene.") else scene_id
-            await hass.services.async_call("scene", "delete", {"entity_id": entity_id}, blocking=True)
             await storage.async_load()
             resp = {"status": "ok", "scene_id": scene_id}
             _LOGGER.info(f"[API] delete_scene response: {json.dumps(resp)}")
@@ -92,16 +77,6 @@ def register_scene_services(hass, scene_manager, storage, coordinator):
         _LOGGER.debug(f"[API] save_scenes called with data: {call.data}")
         scenes = call.data["scenes"]
         await storage.async_overwrite_scenes(scenes)
-        for scene in scenes:
-            await hass.services.async_call(
-                "scene",
-                "create",
-                {
-                    "scene_id": f"savant_{slugify(scene['name'])}",
-                    "entities": scene["relay_states"],
-                },
-                blocking=True
-            )
         await storage.async_load()
         resp = {"status": "ok", "count": len(scenes)}
         _LOGGER.info(f"[API] save_scenes completed. Scenes count: {len(scenes)}")

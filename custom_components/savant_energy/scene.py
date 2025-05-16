@@ -11,6 +11,7 @@ Only use the integration's services or UI to manage Savant scenes.
 import logging
 import json
 import asyncio
+import voluptuous as vol # type: ignore
 from typing import Any, Dict, Final, List, Optional
 
 from homeassistant.config_entries import ConfigEntry  # type: ignore
@@ -64,22 +65,55 @@ class SavantScenesRestView(HomeAssistantView):
 
     async def post(self, request):
         """Create a new Savant scene via REST."""
+        data = None # Initialize data to handle potential unbound error
         try:
             data = await request.json()
             hass = request.app["hass"]
-            try:
-                await hass.services.async_call(
-                    DOMAIN, "create_scene", data, blocking=True
-                )
-            except HomeAssistantError as ha_err:
-                # Duplicate or validation error
-                _LOGGER.warning(f"[REST] Duplicate or validation error creating scene: {ha_err}", exc_info=True)
-                return self.json({"status": "error", "message": str(ha_err)}, status_code=400)
-            # If no exception, assume success
-            return self.json({"status": "ok", "scene_id": f"savant_{slugify(data['name'])}"})
-        except Exception as e:
-            _LOGGER.error(f"[REST] Error creating scene: {e}", exc_info=True)
-            return self.json({"status": "error", "message": str(e)}, status_code=500)
+            
+            # Call the service. handle_create_scene always returns a dictionary.
+            service_response = await hass.services.async_call(
+                DOMAIN, "create_scene", data, blocking=True
+            )
+
+            # The service_response is the dictionary returned by handle_create_scene
+            if service_response:
+                if service_response.get("status") == "error":
+                    _LOGGER.warning(f"[REST] 'create_scene' service reported error: {service_response.get('message')}")
+                    return self.json({
+                        "status": "error", 
+                        "message": service_response.get("message", "Error during scene creation."),
+                        "error": service_response.get("error", "service_handler_error") 
+                    }, status_code=400) # Bad Request (e.g., for scene_exists)
+                elif service_response.get("status") == "ok":
+                    scene_id = service_response.get("scene_id")
+                    # Fallback for scene_id generation if not in response, though it should be.
+                    if not scene_id and data and "name" in data:
+                         _LOGGER.error(f"[REST] 'create_scene' service reported 'ok' but no scene_id. Data: {data}")
+                         scene_id = f"savant_{slugify(data['name'])}"
+                    elif not scene_id:
+                         _LOGGER.error(f"[REST] 'create_scene' service reported 'ok' but no scene_id and no name in data. Data: {data}")
+                         # Cannot generate a meaningful scene_id if name is also missing
+                         return self.json({"status": "error", "message": "Scene created but scene_id missing and could not be generated.", "error": "internal_error"}, status_code=500)
+                    return self.json({"status": "ok", "scene_id": scene_id})
+            
+            # Fallback for unexpected/empty service_response (should not happen with current handle_create_scene)
+            _LOGGER.error(f"[REST] Unexpected or empty response from 'create_scene' service. Data: {data}, Response: {service_response}")
+            return self.json({"status": "error", "message": "Unexpected response from scene creation service.", "error": "unexpected_service_response"}, status_code=500)
+
+        except vol.Invalid as vol_err: # Schema validation error for the service call
+            _LOGGER.warning(f"[REST] Invalid data for 'create_scene' service call. Data: {data}. Error: {vol_err}", exc_info=True)
+            return self.json({"status": "error", "message": f"Invalid data: {vol_err.error_message}", "error": "validation_error", "path": vol_err.path}, status_code=400)
+        except HomeAssistantError as ha_err: 
+            # Catches HomeAssistantError if the service call itself fails (e.g., service not found)
+            # or if the handler re-raised it (which handle_create_scene doesn't for "scene_exists").
+            _LOGGER.warning(f"[REST] HomeAssistantError during 'create_scene' service invocation. Data: {data}. Error: {ha_err}", exc_info=True)
+            return self.json({"status": "error", "message": str(ha_err), "error": "service_invocation_error"}, status_code=400) 
+        except json.JSONDecodeError as json_err: # Specifically catch errors from await request.json()
+            _LOGGER.warning(f"[REST] Invalid JSON received: {json_err}", exc_info=True)
+            return self.json({"status": "error", "message": "Invalid JSON format in request body.", "error": "json_decode_error"}, status_code=400)
+        except Exception as e: 
+            _LOGGER.error(f"[REST] General error in POST /api/savant_energy/scenes. Data: {data}. Error: {e}", exc_info=True)
+            return self.json({"status": "error", "message": "An unexpected server error occurred.", "error": "unknown_server_error"}, status_code=500)
 
 
 class SavantSceneBreakersRestView(HomeAssistantView):
@@ -202,14 +236,14 @@ class SavantSceneStorage:
                 state = self.hass.states.get(entity_id)
                 if not state: # Should generally not happen if entity_id came from async_entity_ids
                     continue
-                friendly_name = state.attributes.get("friendly_name", "").lower()
+                friendly_name = state.attributes.get("name", "").lower()
                 entity_id_lower = entity_id.lower()
                 # Define what constitutes a "breaker" switch relevant to scenes
                 # This logic should align with how breakers are identified elsewhere (e.g., SavantSceneManager.get_all_available_devices)
                 if "breaker" in entity_id_lower or "breaker" in friendly_name:
                     valid_breaker_entity_ids.add(entity_id)
 
-            _LOGGER.debug(f"Found {len(valid_breaker_entity_ids)} valid breaker switch entity IDs for scene validation: {valid_breaker_entity_ids}")
+            _LOGGER.debug(f"Found {len(valid_breaker_entity_ids)} valid breaker switch entity IDs for scene validation")
 
             for scene_id_key, scene_data in list(self.scenes.items()): # Use list(self.scenes.items()) for safe iteration if modifying
                 original_relay_states = scene_data.get("relay_states", {})
@@ -227,7 +261,7 @@ class SavantSceneStorage:
                     else:
                         _LOGGER.warning(f"Ignoring relay_states key '{key}' in scene '{scene_name_for_log}' because it is not a recognized valid breaker switch entity_id.")
                 scene_data["relay_states"] = new_relay_states
-            _LOGGER.debug(f"Loaded and validated {len(self.scenes)} scenes from storage. Current scenes data: {json.dumps(self.scenes)}")
+            _LOGGER.debug(f"Loaded and validated {len(self.scenes)} scenes from storage.")
         else:
             _LOGGER.warning("No scenes found in storage or data is invalid")
             self.scenes = {}
@@ -250,9 +284,11 @@ class SavantSceneStorage:
             scene_id = f"savant_{slugify(name)}"
             if scene_id in self.scenes:
                 raise HomeAssistantError(f"Scene {name} already exists")
+                return  # Defensive: will never be reached, but clarifies intent
             for existing_scene in self.scenes.values():
                 if existing_scene["name"].strip().lower() == name.strip().lower():
                     raise HomeAssistantError(f"Scene {name} already exists")
+                    return  # Defensive: will never be reached, but clarifies intent
             relay_states = relay_states or {}
             all_entity_ids = self.hass.states.async_entity_ids("switch")
             for entity_id_str in all_entity_ids:

@@ -1,4 +1,4 @@
-# custom_components/energy_snapshot/config_flow.py
+# custom_components/savant_energy/config_flow.py
 """
 Config flow for Savant Energy integration.
 Guides the user through entering connection details and options for setup.
@@ -29,7 +29,7 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-class ConfigFlow(config_entries.ConfigFlow):
+class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN): 
     """
     Handle the configuration flow for Savant Energy.
     Guides the user through entering connection details and options.
