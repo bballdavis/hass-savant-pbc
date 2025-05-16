@@ -26,8 +26,7 @@ from .const import (
     DOMAIN, 
     MANUFACTURER, 
     DEFAULT_OLA_PORT, 
-    CONF_DMX_TESTING_MODE,
-    CONF_CLEAR_RELOAD_SCENES_ON_STARTUP
+    CONF_DMX_TESTING_MODE
 )
 from .utils import async_set_dmx_values, slugify
 
@@ -163,61 +162,10 @@ async def async_setup_entry(
     if coordinator.data is not None:
         storage = SavantSceneStorage(hass)
         entity_registry = async_get_entity_registry(hass)
-        # Check for clear_reload_scenes_on_startup option
-        clear_reload = entry.options.get(
-            CONF_CLEAR_RELOAD_SCENES_ON_STARTUP,
-            entry.data.get(CONF_CLEAR_RELOAD_SCENES_ON_STARTUP, False)
-        )
-        savant_scene_entities = [
-            e for e in entity_registry.entities.values()
-            if (
-                e.entity_id.startswith("scene.savant_") or
-                e.entity_id.startswith("scene.scene_savant_") or
-                e.entity_id.startswith("scene.savantenergy_") or
-                e.entity_id.startswith("scene.savant_energy_")
-            )
-        ]
-        if clear_reload:
-            if savant_scene_entities:
-                _LOGGER.info("[clear_reload_scenes_on_startup] Removing all Savant scenes from entity registry.")
-                for entity in savant_scene_entities:
-                    entity_registry.async_remove(entity.entity_id)
-            # Remove Savant scenes from hass.states (state machine) as well
-            savant_scene_state_ids = [
-                entity_id for entity_id in hass.states.async_entity_ids("scene")
-                if (
-                    entity_id.startswith("scene.savant_") or
-                    entity_id.startswith("scene.scene_savant_") or
-                    entity_id.startswith("scene.savantenergy_") or
-                    entity_id.startswith("scene.savant_energy_")
-                )
-            ]
-            if savant_scene_state_ids:
-                _LOGGER.info(f"[clear_reload_scenes_on_startup] Removing {len(savant_scene_state_ids)} Savant scenes from state machine.")
-                for entity_id in savant_scene_state_ids:
-                    hass.states.async_remove(entity_id)
-            # Do NOT clear integration storage here; only remove from HASS
-            await storage.async_load()  # Load scenes as normal
-        else:
-            if savant_scene_entities:
-                _LOGGER.info("Clearing all Home Assistant Savant scenes (including legacy/orphaned) to enforce single naming convention.")
-                for entity in savant_scene_entities:
-                    entity_registry.async_remove(entity.entity_id)
-            await storage.async_load()
         # Create the scene manager
         scene_manager = SavantSceneManager(hass, coordinator, storage)
         hass.data.setdefault(f"{DOMAIN}_scene_managers", {})[entry.entry_id] = scene_manager
-        # Create entities for existing scenes (from storage)
-        for scene_id, scene_data in storage.scenes.items():
-            await hass.services.async_call(
-                "scene",
-                "create",
-                {
-                    "scene_id": scene_id,
-                    "entities": scene_data["relay_states"],
-                },
-                blocking=True
-            )
+        # Do NOT create scene entities for Savant scenes anymore
         # Register all Savant Energy scene API/service handlers
         register_scene_services(hass, scene_manager, storage, coordinator)
         # Register REST API views

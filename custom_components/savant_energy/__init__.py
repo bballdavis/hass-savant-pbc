@@ -9,16 +9,24 @@ import shutil
 import os
 import traceback
 
-import homeassistant.helpers.config_validation as cv
-import voluptuous as vol
+import homeassistant.helpers.config_validation as cv # type: ignore
+import voluptuous as vol # type: ignore
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
-from homeassistant.helpers.translation import async_get_translations
+from homeassistant.config_entries import ConfigEntry # type: ignore
+from homeassistant.core import HomeAssistant # type: ignore
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator  # type: ignore
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry # type: ignore
+from homeassistant.helpers.translation import async_get_translations # type: ignore
 
-from .const import DOMAIN, PLATFORMS, CONF_ADDRESS, CONF_PORT, CONF_SCAN_INTERVAL, DEFAULT_OLA_PORT
+from .const import (
+    DOMAIN,
+    CONF_ADDRESS,
+    CONF_PORT,
+    CONF_OLA_PORT,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_OLA_PORT,
+    PLATFORMS,
+)
 from .snapshot_data import get_current_energy_snapshot
 from .utils import async_get_all_dmx_status, DMX_CACHE_SECONDS
 

@@ -5,10 +5,10 @@ Guides the user through entering connection details and options for setup.
 """
 
 import logging
-import voluptuous as vol
+import voluptuous as vol # type: ignore
 
-from homeassistant import config_entries
-from homeassistant.core import callback
+from homeassistant import config_entries # type: ignore
+from homeassistant.core import callback # type: ignore
 
 from .const import (
     DOMAIN,
@@ -16,13 +16,11 @@ from .const import (
     CONF_PORT,
     CONF_OLA_PORT,
     CONF_SCAN_INTERVAL,
+    DEFAULT_OLA_PORT,
     CONF_SWITCH_COOLDOWN,
+    DEFAULT_SWITCH_COOLDOWN,
     CONF_DMX_TESTING_MODE,
     CONF_DMX_ADDRESS_CACHE,
-    CONF_CLEAR_RELOAD_SCENES_ON_STARTUP,
-    DEFAULT_SWITCH_COOLDOWN,
-    DEFAULT_OLA_PORT,
-    DEFAULT_CLEAR_RELOAD_SCENES_ON_STARTUP,
     DEFAULT_DMX_TESTING_MODE,
     DEFAULT_DMX_ADDRESS_CACHE,
     DEFAULT_DISABLE_SCENE_BUILDER,
@@ -31,7 +29,7 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class ConfigFlow(config_entries.ConfigFlow):
     """
     Handle the configuration flow for Savant Energy.
     Guides the user through entering connection details and options.
@@ -65,7 +63,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_OLA_PORT, default=DEFAULT_OLA_PORT): int,
                     vol.Optional(CONF_DMX_TESTING_MODE, default=DEFAULT_DMX_TESTING_MODE): bool,
                     vol.Optional(CONF_DMX_ADDRESS_CACHE, default=DEFAULT_DMX_ADDRESS_CACHE): bool,
-                    vol.Optional(CONF_CLEAR_RELOAD_SCENES_ON_STARTUP, default=DEFAULT_CLEAR_RELOAD_SCENES_ON_STARTUP): bool,
                     vol.Optional("disable_scene_builder", default=DEFAULT_DISABLE_SCENE_BUILDER): bool,
                 }
             ),
@@ -155,13 +152,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 default=self.config_entry.options.get(
                     CONF_DMX_ADDRESS_CACHE,
                     self.config_entry.data.get(CONF_DMX_ADDRESS_CACHE, DEFAULT_DMX_ADDRESS_CACHE),
-                ),
-            ): bool,
-            vol.Optional(
-                CONF_CLEAR_RELOAD_SCENES_ON_STARTUP,
-                default=self.config_entry.options.get(
-                    CONF_CLEAR_RELOAD_SCENES_ON_STARTUP,
-                    self.config_entry.data.get(CONF_CLEAR_RELOAD_SCENES_ON_STARTUP, DEFAULT_CLEAR_RELOAD_SCENES_ON_STARTUP),
                 ),
             ): bool,
             vol.Optional(

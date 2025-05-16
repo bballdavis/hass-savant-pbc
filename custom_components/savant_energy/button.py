@@ -5,21 +5,87 @@ Provides diagnostic and control buttons for the integration.
 
 import logging
 from typing import Final
+from datetime import timedelta
 
-from homeassistant.components.button import ButtonEntity, ButtonDeviceClass
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.components.button import ButtonEntity, ButtonDeviceClass  # type: ignore
+from homeassistant.config_entries import ConfigEntry  # type: ignore
+from homeassistant.const import EntityCategory  # type: ignore
+from homeassistant.core import HomeAssistant  # type: ignore
+from homeassistant.helpers.entity import DeviceInfo  # type: ignore
+from homeassistant.helpers.entity_platform import AddEntitiesCallback  # type: ignore
+from homeassistant.helpers.event import async_track_time_interval  # type: ignore
 
 from .const import DOMAIN, MANUFACTURER, DEFAULT_OLA_PORT, CONF_DMX_TESTING_MODE
 from .utils import async_set_dmx_values, get_dmx_api_stats
+from .scene import SavantSceneStorage, SavantSceneManager
 
 _LOGGER = logging.getLogger(__name__)
 
 ALL_LOADS_BUTTON_NAME: Final = "All Loads On"
 DEFAULT_CHANNEL_COUNT: Final = 50
+
+
+class SavantSceneButton(ButtonEntity):
+    """
+    Button entity to execute a Savant scene.
+    When pressed, always uses the latest scene data from storage and ensures all DMX addresses are included.
+    """
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, hass, scene_manager, scene_id, scene_name):
+        self._hass = hass
+        self._scene_manager = scene_manager
+        self._scene_id = scene_id
+        self._attr_name = f"Savant {scene_name} Scene"
+        self._attr_unique_id = f"savant_scene_button_{scene_id}"
+        self._attr_device_info = DeviceInfo(
+            identifiers = {(DOMAIN, "scenes")},
+            name = "Savant Scenes",
+            manufacturer = MANUFACTURER,
+        )
+
+    @property
+    def available(self):
+        return self._scene_id in self._scene_manager.storage.scenes
+
+    async def async_press(self):
+        """
+        When pressed, dynamically loads the latest scene data and sends the DMX command.
+        """
+        scene = self._scene_manager.storage.scenes.get(self._scene_id)
+        if not scene:
+            _LOGGER.warning(f"Scene {self._scene_id} not found in storage when button pressed.")
+            return
+        relay_states = scene.get("relay_states", {})
+        all_entity_ids = self._hass.states.async_entity_ids("sensor")
+        dmx_address_sensors = [eid for eid in all_entity_ids if eid.endswith("_dmx_address")]
+        dmx_values = {}
+        for entity_id in dmx_address_sensors:
+            state = self._hass.states.get(entity_id)
+            if state and state.state not in ("unknown", "unavailable"):
+                try:
+                    dmx_address = int(state.state)
+                    breaker_entity_id = entity_id.replace("_dmx_address", "")
+                    value = 255 if relay_states.get(breaker_entity_id, True) else 0
+                    dmx_values[dmx_address] = str(value)
+                except (ValueError, TypeError):
+                    _LOGGER.debug(f"Invalid DMX address value in sensor {entity_id}: {state.state}")
+        if not dmx_values:
+            _LOGGER.warning("No DMX addresses found for scene button press. No DMX command sent.")
+            return
+        ip_address = self._scene_manager.coordinator.config_entry.data.get("address")
+        ola_port = self._scene_manager.coordinator.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
+        dmx_testing_mode = self._scene_manager.coordinator.config_entry.options.get(
+            CONF_DMX_TESTING_MODE,
+            self._scene_manager.coordinator.config_entry.data.get(CONF_DMX_TESTING_MODE, False)
+        )
+        _LOGGER.info(f"Executing Savant Scene '{scene['name']}' with {len(dmx_values)} DMX addresses.")
+        success = await async_set_dmx_values(ip_address, dmx_values, ola_port, dmx_testing_mode)
+        if success:
+            _LOGGER.info(f"Savant Scene '{scene['name']}' executed successfully.")
+        else:
+            _LOGGER.warning(f"Failed to execute Savant Scene '{scene['name']}'.")
 
 
 async def async_setup_entry(
@@ -29,7 +95,15 @@ async def async_setup_entry(
     Set up Savant Energy button entities.
     Adds diagnostic and control buttons if presentDemands data is available.
     """
+    # Add Savant Scene Buttons for each scene in storage, and keep them in sync
+    storage = SavantSceneStorage(hass)
+    await storage.async_load()
     coordinator = hass.data[DOMAIN][entry.entry_id]
+    scene_manager = SavantSceneManager(hass, coordinator, storage)
+    button_manager = SavantSceneButtonManager(hass, scene_manager, async_add_entities)
+    hass.data.setdefault(f"{DOMAIN}_scene_button_managers", {})[entry.entry_id] = button_manager
+    await button_manager.async_setup()
+
     # Always trigger a refresh to ensure polling starts
     await coordinator.async_request_refresh()
     if coordinator.data is not None:
@@ -50,6 +124,58 @@ async def async_setup_entry(
             _LOGGER.warning(
                 "No presentDemands data found in coordinator snapshot_data, buttons not added"
             )
+
+
+class SavantSceneButtonManager:
+    """
+    Manages dynamic creation and removal of SavantSceneButton entities as scenes are added/removed.
+    Periodically refreshes to keep button entities in sync with storage.
+    Ensures on load-in that all scenes have a button, even if the button didn't exist yet.
+    """
+    def __init__(self, hass, scene_manager, async_add_entities):
+        self.hass = hass
+        self.scene_manager = scene_manager
+        self.async_add_entities = async_add_entities
+        self.buttons = {}  # scene_id -> SavantSceneButton
+        self._unsub_refresh = None
+        self._last_scene_ids = set()
+
+    async def async_setup(self):
+        # On initial setup, ensure all scenes have a button entity
+        await self._refresh_buttons()
+        self._unsub_refresh = async_track_time_interval(self.hass, self._periodic_refresh, timedelta(seconds=10))
+
+    async def _periodic_refresh(self, *_):
+        await self._refresh_buttons()
+
+    async def _refresh_buttons(self):
+        await self.scene_manager.storage.async_load()
+        scene_ids = set(self.scene_manager.storage.scenes.keys())
+        # Add new buttons for any scenes that don't have one yet
+        new_ids = scene_ids - self._last_scene_ids
+        for scene_id in new_ids:
+            scene_data = self.scene_manager.storage.scenes[scene_id]
+            if scene_id not in self.buttons:
+                button = SavantSceneButton(self.hass, self.scene_manager, scene_id, scene_data["name"])
+                self.async_add_entities([button])
+                self.buttons[scene_id] = button
+                _LOGGER.info(f"Created Savant Scene Button for scene: {scene_data['name']} ({scene_id})")
+        # Remove deleted buttons
+        removed_ids = self._last_scene_ids - scene_ids
+        for scene_id in removed_ids:
+            button = self.buttons.pop(scene_id, None)
+            if button:
+                await button.async_remove()
+                _LOGGER.info(f"Removed Savant Scene Button for deleted scene: {scene_id}")
+        self._last_scene_ids = scene_ids
+
+    async def async_unload(self):
+        if self._unsub_refresh:
+            self._unsub_refresh()
+            self._unsub_refresh = None
+        for button in self.buttons.values():
+            await button.async_remove()
+        self.buttons.clear()
 
 
 class SavantAllLoadsButton(ButtonEntity):
