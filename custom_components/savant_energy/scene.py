@@ -197,8 +197,7 @@ class SavantSceneBreakersRestView(HomeAssistantView):
                 SavantSceneManager(
                     hass, coordinator, storage
                 ).get_all_available_devices()
-                if coordinator
-                else {}
+                if coordinator else {}
             )
             # For any breaker in all_breakers not in saved_states, set to True (on) by default
             merged = {
@@ -492,7 +491,7 @@ class SavantSceneStorage:
                     }
                     processed_scene_ids.add(final_id)
 
-            _LOGGER.info(f"Overwriting scenes. {len(self.scenes)} scenes prepared after processing input list.")
+            _LOGGER.info(f"Overwriting scenes. {len(self.scenes)} scenes processed after input list.")
             await self.async_save() # async_save logs its own success
             _LOGGER.info("Scenes successfully overwritten and saved via async_overwrite_scenes.")
 

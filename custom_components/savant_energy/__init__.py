@@ -11,16 +11,23 @@ import traceback
 import json
 import uuid
 
-import homeassistant.helpers.config_validation as cv # type: ignore
-import voluptuous as vol # type: ignore
+import homeassistant.helpers.config_validation as cv  # type: ignore
+import voluptuous as vol  # type: ignore
 
-from homeassistant.config_entries import ConfigEntry # type: ignore
-from homeassistant.core import HomeAssistant # type: ignore
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator # type: ignore
-from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry # type: ignore
-from homeassistant.helpers.translation import async_get_translations # type: ignore
+from homeassistant.config_entries import ConfigEntry  # type: ignore
+from homeassistant.core import HomeAssistant  # type: ignore
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator  # type: ignore
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry  # type: ignore
+from homeassistant.helpers.translation import async_get_translations  # type: ignore
 
-from .const import DOMAIN, PLATFORMS, CONF_ADDRESS, CONF_PORT, CONF_SCAN_INTERVAL, DEFAULT_OLA_PORT
+from .const import (
+    DOMAIN,
+    PLATFORMS,
+    CONF_ADDRESS,
+    CONF_PORT,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_OLA_PORT,
+)
 from .snapshot_data import get_current_energy_snapshot
 from .utils import async_get_all_dmx_status, DMX_CACHE_SECONDS
 
@@ -52,6 +59,7 @@ class SavantEnergyCoordinator(DataUpdateCoordinator):
     Coordinator for Savant Energy data updates.
     Handles periodic polling of the Savant controller for energy and relay status data.
     """
+
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         """
         Initialize the coordinator.
@@ -73,7 +81,7 @@ class SavantEnergyCoordinator(DataUpdateCoordinator):
         self.config_entry = entry  # Store config entry directly
         self.dmx_data = {}  # Mapping of channel -> status (for debugging)
         self.dmx_last_update = None
-        
+
     async def _async_update_data(self):
         """
         Fetch data from the Savant controller and update DMX status (for debugging).
@@ -85,41 +93,46 @@ class SavantEnergyCoordinator(DataUpdateCoordinator):
             snapshot_data = await self.hass.async_add_executor_job(
                 get_current_energy_snapshot, self.address, self.port
             )
-            
+
             # Log diagnostic information for troubleshooting entity availability
             if snapshot_data is None:
-                _LOGGER.error("Received no data from Savant controller - check connection settings")
+                _LOGGER.error(
+                    "Received no data from Savant controller - check connection settings"
+                )
                 return self.data  # Keep previous data rather than None
-                
+
             if "presentDemands" not in snapshot_data:
-                _LOGGER.error(f"Missing 'presentDemands' in snapshot data: {snapshot_data}")
-                
+                _LOGGER.error(
+                    f"Missing 'presentDemands' in snapshot data: {snapshot_data}"
+                )
+
             # Check if we have valid device data to report for debugging
             if "presentDemands" in snapshot_data:
                 device_count = len(snapshot_data["presentDemands"])
                 _LOGGER.debug(f"Retrieved {device_count} devices in presentDemands")
-                
+
                 # Debug log each device found for troubleshooting
                 for device in snapshot_data["presentDemands"]:
                     has_uid = "uid" in device
                     has_name = "name" in device
                     has_percent = "percentCommanded" in device
                     if not all([has_uid, has_name, has_percent]):
-                        _LOGGER.warning(f"Incomplete device data: uid={has_uid}, name={has_name}, percentCommanded={has_percent}. Device: {device}")
-            
+                        _LOGGER.warning(
+                            f"Incomplete device data: uid={has_uid}, name={has_name}, percentCommanded={has_percent}. Device: {device}"
+                        )
+
             # Update DMX status for debugging if cache expired
             now = datetime.now()
-            if (not self.dmx_last_update or 
-                (now - self.dmx_last_update).total_seconds() > DMX_CACHE_SECONDS):
+            if (
+                not self.dmx_last_update
+                or (now - self.dmx_last_update).total_seconds() > DMX_CACHE_SECONDS
+            ):
                 _LOGGER.debug("Updating DMX status data for debugging purposes only")
                 ola_port = self.config_entry.data.get("ola_port", DEFAULT_OLA_PORT)
                 self.dmx_data = {}
                 self.dmx_last_update = now
-                
-            return {
-                "snapshot_data": snapshot_data,
-                "dmx_data": self.dmx_data
-            }
+
+            return {"snapshot_data": snapshot_data, "dmx_data": self.dmx_data}
         except Exception as exc:
             _LOGGER.error(f"Error updating data: {exc}")
             raise
@@ -131,34 +144,41 @@ async def _async_register_frontend_resource(hass: HomeAssistant) -> None:
     """
     resource_url = f"/hacsfiles/savant_energy/{LOVELACE_CARD_FILENAME}"
     resource_type = "module"
-    _LOGGER.debug(f"[LovReg] Starting frontend resource registration: url={resource_url}, type={resource_type}")
+    _LOGGER.debug(
+        f"[LovReg] Starting frontend resource registration: url={resource_url}, type={resource_type}"
+    )
 
     # Always patch .storage/lovelace_resources file (storage mode)
     storage_path = hass.config.path(".storage", "lovelace_resources")
-    _LOGGER.debug(f"[LovReg] Storage-mode fallback, patching storage file at: {storage_path}")
-    
+    _LOGGER.debug(
+        f"[LovReg] Storage-mode fallback, patching storage file at: {storage_path}"
+    )
+
     def _patch_storage() -> None:
         if not os.path.exists(storage_path):
-            _LOGGER.debug(f"[LovReg] Storage file not found, skipping patch: {storage_path}")
+            _LOGGER.debug(
+                f"[LovReg] Storage file not found, skipping patch: {storage_path}"
+            )
             return
-        with open(storage_path, 'r', encoding='utf-8') as f:
+        with open(storage_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        items = data.get('data', {}).get('items', [])
-        if any(item.get('url') == resource_url for item in items):
+        items = data.get("data", {}).get("items", [])
+        if any(item.get("url") == resource_url for item in items):
             _LOGGER.debug(f"[LovReg] Resource already in storage, no patch needed.")
             return
         # Append new resource entry
-        items.append({
-            'id': uuid.uuid4().hex,
-            'url': resource_url,
-            'type': resource_type
-        })
-        data.setdefault('data', {})['items'] = items
-        with open(storage_path, 'w', encoding='utf-8') as f:
+        items.append(
+            {"id": uuid.uuid4().hex, "url": resource_url, "type": resource_type}
+        )
+        data.setdefault("data", {})["items"] = items
+        with open(storage_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         _LOGGER.debug(f"[LovReg] Appended new resource entry to storage file.")
+
     await hass.async_add_executor_job(_patch_storage)
-    _LOGGER.info(f"Patched .storage/lovelace_resources to include resource: {resource_url}")
+    _LOGGER.info(
+        f"Patched .storage/lovelace_resources to include resource: {resource_url}"
+    )
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -166,15 +186,15 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.data.setdefault(DOMAIN, {})
     return True
 
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Savant Energy from a config entry."""
-    # Preload translations for config options (for UI friendly names)
-    await async_get_translations(hass, hass.config.language, "options", DOMAIN)
+    # Preload translations for the domain, making them available for UI flows and other parts of the integration
+    await async_get_translations(hass, hass.config.language, DOMAIN)
 
     # Check for disable_scene_builder option
     disable_scene_builder = entry.options.get(
-        "disable_scene_builder",
-        entry.data.get("disable_scene_builder", False)
+        "disable_scene_builder", entry.data.get("disable_scene_builder", False)
     )
     if not disable_scene_builder:
         # Copy Lovelace card JS into HACS www directory for hosting at /local/community/<integration>/
@@ -193,30 +213,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Create coordinator and proceed with normal setup
     coordinator = SavantEnergyCoordinator(hass, entry)
-    
+
     # Get initial data before setting up platforms
     _LOGGER.info("Fetching initial data from Savant Energy controller")
     await coordinator.async_config_entry_first_refresh()
-    
+
     hass.data[DOMAIN][entry.entry_id] = coordinator
-    
+
     if coordinator.data is None or not coordinator.data.get("snapshot_data"):
-        _LOGGER.warning("Initial data fetch failed or returned no data - entities may be unavailable")
-    
+        _LOGGER.warning(
+            "Initial data fetch failed or returned no data - entities may be unavailable"
+        )
+
     # Use PLATFORMS from const.py
     _LOGGER.info("Setting up Savant Energy platforms")
     setup_platforms = list(PLATFORMS)  # Make a copy to avoid modifying the original
     if not disable_scene_builder:
         setup_platforms.append("scene")
-    
+
     await hass.config_entries.async_forward_entry_setups(entry, setup_platforms)
-    
+
     # Ensure frontend resource registration
     if not disable_scene_builder:
         hass.async_create_task(_async_register_frontend_resource(hass))
-    
+
     entry.async_on_unload(entry.add_update_listener(async_update_listener))
-    
+
     return True
 
 
@@ -224,19 +246,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     # Use the same platform logic as in setup
     disable_scene_builder = entry.options.get(
-        "disable_scene_builder",
-        entry.data.get("disable_scene_builder", False)
+        "disable_scene_builder", entry.data.get("disable_scene_builder", False)
     )
-    
+
     unload_platforms = list(PLATFORMS)
     if not disable_scene_builder:
         unload_platforms.append("scene")
-        
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, unload_platforms)
-    
+
+    unload_ok = await hass.config_entries.async_unload_platforms(
+        entry, unload_platforms
+    )
+
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
-        
+
     return unload_ok
 
 
@@ -245,5 +268,6 @@ async def async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None
     Handle options update by reloading the config entry.
     """
     await hass.config_entries.async_reload(entry.entry_id)
+
 
 # All classes and functions are now documented for clarity and open source maintainability.
