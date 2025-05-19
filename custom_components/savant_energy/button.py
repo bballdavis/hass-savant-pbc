@@ -37,11 +37,11 @@ class SavantSceneButton(ButtonEntity):
         self._hass = hass
         self._scene_manager = scene_manager
         self._scene_id = scene_id
-        self._attr_name = f"Savant {scene_name} Scene"
-        self._attr_unique_id = f"savant_scene_button_{scene_id}"
+        self._attr_name = scene_name
+        self._attr_unique_id = scene_id
         self._attr_device_info = DeviceInfo(
-            identifiers = {(DOMAIN, "scenes")},
-            name = "Savant Scenes",
+            identifiers = {(DOMAIN, scene_id)},
+            name = scene_name,
             manufacturer = MANUFACTURER,
         )
 

@@ -13,6 +13,7 @@ import json
 import asyncio
 import voluptuous as vol  # type: ignore
 from typing import Any, Dict, Final, List, Optional
+import re # Added for name normalization
 
 from homeassistant.config_entries import ConfigEntry  # type: ignore
 from homeassistant.core import HomeAssistant, callback  # type: ignore
@@ -303,205 +304,127 @@ class SavantSceneStorage:
         self.store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self.scenes: Dict[str, Dict] = {}
         self._lock = asyncio.Lock()
-        self._last_saved_state: Dict[
-            str, Dict
-        ] = {}  # Keep track of last successfully saved state
+        self._last_saved_state: Dict[str, Dict] = {}
+
+    def _get_normalized_scene_parts(self, raw_name: str) -> tuple[str, str, str]:
+        """
+        Normalizes a raw scene name to a base label, then formats it into
+        a final scene name and a scene ID.
+        Returns: (base_label, final_scene_name, final_scene_id)
+        """
+        # Remove any existing Savant prefix/suffix before reapplying
+        base_label = re.sub(r'^[Ss]avant\s+', '', raw_name, flags=re.IGNORECASE)
+        base_label = re.sub(r'\s+[Ss]cene$', '', base_label, flags=re.IGNORECASE).strip()
+        final_name = f"Savant {base_label} Scene"
+        slug = slugify(base_label)
+        final_id = f"savant_{slug}_scene"
+        return base_label, final_name, final_id
 
     async def async_load(self) -> None:
-        """Load scenes from storage and migrate relay_states keys to breaker IDs only (no fallback to friendly name)."""
+        _LOGGER.info("[SceneStorage] async_load called.")
         data = await self.store.async_load()
-        _LOGGER.debug(f"Loading scenes from storage.")
+        _LOGGER.debug("Loading scenes from storage.")
         if data and "scenes" in data:
             self.scenes = data["scenes"]
-
-            # Get all valid breaker switch entity IDs from HASS
-            valid_breaker_entity_ids = set()
-            all_hass_switch_ids = self.hass.states.async_entity_ids("switch")
-            for entity_id in all_hass_switch_ids:
-                state = self.hass.states.get(entity_id)
-                if not state:  # Should generally not happen if entity_id came from async_entity_ids
-                    continue
-                friendly_name = state.attributes.get("name", "").lower()
-                entity_id_lower = entity_id.lower()
-                # Define what constitutes a "breaker" switch relevant to scenes
-                # This logic should align with how breakers are identified elsewhere (e.g., SavantSceneManager.get_all_available_devices)
-                if "breaker" in entity_id_lower or "breaker" in friendly_name:
-                    valid_breaker_entity_ids.add(entity_id)
-
-            _LOGGER.debug(
-                f"Found {len(valid_breaker_entity_ids)} valid breaker switch entity IDs for scene validation"
+            # Validate relay_states keys
+            valid_switches = set(
+                eid for eid in self.hass.states.async_entity_ids("switch")
+                if (st:=self.hass.states.get(eid)) and "breaker" in eid.lower()
             )
-
-            for scene_id_key, scene_data in list(
-                self.scenes.items()
-            ):  # Use list(self.scenes.items()) for safe iteration if modifying
-                original_relay_states = scene_data.get("relay_states", {})
-                new_relay_states = {}
-
-                scene_name_for_log = scene_data.get("name", scene_id_key)
-
-                if not isinstance(original_relay_states, dict):
-                    _LOGGER.warning(
-                        f"Scene '{scene_name_for_log}' has malformed relay_states (not a dict): {original_relay_states}. Clearing relay_states for this scene."
-                    )
-                    original_relay_states = {}
-
-                for key, value in original_relay_states.items():
-                    if key in valid_breaker_entity_ids:
-                        new_relay_states[key] = value
-                    else:
-                        _LOGGER.warning(
-                            f"Ignoring relay_states key '{key}' in scene '{scene_name_for_log}' because it is not a recognized valid breaker switch entity_id."
-                        )
-                scene_data["relay_states"] = new_relay_states
-            _LOGGER.debug(
-                f"Loaded and validated {len(self.scenes)} scenes from storage."
-            )
+            for sid, sd in list(self.scenes.items()):
+                orig = sd.get("relay_states", {}) or {}
+                cleaned = {k: v for k, v in orig.items() if k in valid_switches}
+                sd["relay_states"] = cleaned
+            _LOGGER.debug(f"Loaded and validated {len(self.scenes)} scenes.")
         else:
-            _LOGGER.warning("No scenes found in storage or data is invalid")
+            _LOGGER.warning("No valid scenes in storage; resetting.")
             self.scenes = {}
+        _LOGGER.info(f"[SceneStorage] async_load complete. Scene count: {len(self.scenes)}")
 
     async def async_save(self) -> None:
-        """Save current self.scenes to storage."""
+        _LOGGER.info(f"[SceneStorage] async_save called. Scene count: {len(self.scenes)}")
+        _LOGGER.debug(f"[SceneStorage] Scenes to save: {json.dumps(self.scenes, default=str)}")
         async with self._lock:
-            _LOGGER.debug(
-                f"Preparing to save scenes. Current scene count: {len(self.scenes)}. Last saved count: {len(self._last_saved_state)}"
-            )
-
             if self._last_saved_state and not self.scenes:
-                _LOGGER.warning(
-                    f"Attempt to save an empty scene list over a previously populated one (last had {len(self._last_saved_state)} scenes). Restoring from last known good state."
-                )
+                _LOGGER.warning("Preventing overwrite with empty scenes; restoring last state.")
                 self.scenes = dict(self._last_saved_state)
             await self.store.async_save({"scenes": self.scenes})
+            _LOGGER.info(f"[SceneStorage] Data written to store: {json.dumps({'scenes': self.scenes}, default=str)}")
             self._last_saved_state = dict(self.scenes)
-            _LOGGER.info(f"[Storage] Scenes saved to storage.")
+            _LOGGER.info("Scenes saved to storage.")
 
     async def async_create_scene(self, name: str, relay_states: Dict[str, bool]) -> str:
-        """Create a new scene and save it to storage, with robust protection against data loss."""
+        _LOGGER.info(f"[SceneStorage] async_create_scene called with name={name}, relay_states={relay_states}")
         async with self._lock:
-            # Always load the latest state from disk before modifying
-            data = await self.store.async_load()
-            disk_scenes = (data or {}).get("scenes", {})
-            if not disk_scenes and self._last_saved_state:
-                _LOGGER.warning("[Storage] Disk scenes empty but _last_saved_state is not. Restoring from backup.")
-                disk_scenes = dict(self._last_saved_state)
-            self.scenes = dict(disk_scenes)
+            _, final_name, final_id = self._get_normalized_scene_parts(name)
+            _LOGGER.debug(f"[SceneStorage] Normalized scene: id={final_id}, name={final_name}")
+            if final_id in self.scenes:
+                _LOGGER.error(f"[SceneStorage] Scene ID '{final_id}' exists. Cannot create.")
+                raise HomeAssistantError(f"Scene ID '{final_id}' exists.")
+            if any(s.get("name","").lower() == final_name.lower() for s in self.scenes.values()):
+                _LOGGER.error(f"[SceneStorage] Scene name '{final_name}' exists. Cannot create.")
+                raise HomeAssistantError(f"Scene name '{final_name}' exists.")
+            self.scenes[final_id] = {"id": final_id, "name": final_name, "relay_states": relay_states}
+            _LOGGER.info(f"[SceneStorage] Scene dict after add: {json.dumps(self.scenes, default=str)}")
+            await self.async_save()
+            _LOGGER.info(f"[SceneStorage] Scene created: id={final_id}, name={final_name}")
+            return final_id
 
-            scene_id = f"savant_{slugify(name)}"
-            if scene_id in self.scenes:
-                raise HomeAssistantError(f"Scene {name} already exists")
-            for existing_scene in self.scenes.values():
-                if existing_scene["name"].strip().lower() == name.strip().lower():
-                    raise HomeAssistantError(f"Scene {name} already exists")
-            relay_states = relay_states or {}
-            all_entity_ids = self.hass.states.async_entity_ids("switch")
-            for entity_id_str in all_entity_ids:
-                state = self.hass.states.get(entity_id_str)
-                if not state or state.state in ("unknown", "unavailable"):
-                    continue
-                friendly_name = state.attributes.get("friendly_name", "")
-                if (
-                    "breaker" in entity_id_str.lower()
-                    or "breaker" in friendly_name.lower()
-                ):
-                    relay_states[entity_id_str] = True
-            self.scenes[scene_id] = {"name": name, "relay_states": relay_states or {}}
-
-            # Defensive: do not allow save if new state is much smaller than previous (except for delete)
-            if self._last_saved_state and len(self.scenes) < len(self._last_saved_state) and len(self._last_saved_state) > 1:
-                _LOGGER.error(f"[Storage] Refusing to save: new scene count ({len(self.scenes)}) is less than previous ({len(self._last_saved_state)}). Aborting to prevent data loss.")
-                raise HomeAssistantError("Refusing to overwrite scenes: possible data loss detected.")
-
-            await self.store.async_save({"scenes": self.scenes})
-            self._last_saved_state = dict(self.scenes)
-            _LOGGER.info(
-                f"[Storage] Scene '{name}' (ID: {scene_id}) created and saved to storage."
-            )
-            return scene_id
-
-    async def async_update_scene(
-        self,
-        scene_id: str,
-        name: Optional[str] = None,
-        relay_states: Optional[Dict[str, bool]] = None,
-    ) -> None:
-        """Update an existing scene in the JSON file, with robust protection against data loss."""
+    async def async_update_scene(self, scene_id: str, name: Optional[str]=None, relay_states: Optional[Dict[str, bool]]=None) -> None:
+        _LOGGER.info(f"[SceneStorage] async_update_scene called with scene_id={scene_id}, name={name}, relay_states={relay_states}")
         async with self._lock:
-            data = await self.store.async_load()
-            disk_scenes = (data or {}).get("scenes", {})
-            if not disk_scenes and self._last_saved_state:
-                _LOGGER.warning("[Storage] Disk scenes empty but _last_saved_state is not. Restoring from backup.")
-                disk_scenes = dict(self._last_saved_state)
-            self.scenes = dict(disk_scenes)
             if scene_id not in self.scenes:
-                raise HomeAssistantError(f"Scene {scene_id} not found")
-            scene = self.scenes[scene_id]
-            old_name = scene["name"]
-            if name is not None and name != old_name:
-                for existing_id, existing_scene_data in self.scenes.items():
-                    if (
-                        existing_id != scene_id
-                        and existing_scene_data["name"].strip().lower()
-                        == name.strip().lower()
-                    ):
-                        raise HomeAssistantError(
-                            f"A scene with the name '{name}' already exists."
-                        )
-                scene["name"] = name
-                _LOGGER.debug(
-                    f"[Storage] Scene '{scene_id}' name changed from '{old_name}' to '{name}'."
-                )
-            if relay_states is not None:
-                scene["relay_states"] = relay_states
-                _LOGGER.debug(
-                    f"[Storage] Scene '{scene_id}' relay_states updated to: {relay_states}"
-                )
-            # Defensive: do not allow save if new state is much smaller than previous (except for delete)
-            if self._last_saved_state and len(self.scenes) < len(self._last_saved_state) and len(self._last_saved_state) > 1:
-                _LOGGER.error(f"[Storage] Refusing to save: new scene count ({len(self.scenes)}) is less than previous ({len(self._last_saved_state)}). Aborting to prevent data loss.")
-                raise HomeAssistantError("Refusing to overwrite scenes: possible data loss detected.")
-            await self.store.async_save({"scenes": self.scenes})
-            self._last_saved_state = dict(self.scenes)
-            _LOGGER.info(f"[Storage] Scene '{scene_id}' updated and saved to storage.")
+                _LOGGER.error(f"[SceneStorage] Scene '{scene_id}' not found for update.")
+                raise HomeAssistantError(f"Scene '{scene_id}' not found.")
+            sd = self.scenes[scene_id]
+            changed = False
+            if name is not None:
+                _, new_name, _ = self._get_normalized_scene_parts(name)
+                if new_name.lower() != sd.get("name", "").lower():
+                    if any(v.get("name", "").lower() == new_name.lower() and other_id != scene_id for other_id, v in self.scenes.items()):
+                        _LOGGER.error(f"[SceneStorage] Scene name '{new_name}' already exists. Cannot update.")
+                        raise HomeAssistantError(f"Scene name '{new_name}' already exists.")
+                    sd["name"] = new_name
+                    changed = True
+            if relay_states is not None and sd.get("relay_states") != relay_states:
+                sd["relay_states"] = relay_states
+                changed = True
+            if changed:
+                await self.async_save()
+                _LOGGER.info(f"[SceneStorage] Scene '{scene_id}' updated. New name: '{sd.get('name')}', relay_states: {sd.get('relay_states')}")
+            else:
+                _LOGGER.info(f"[SceneStorage] No changes applied to scene '{scene_id}' during update attempt.")
 
     async def async_delete_scene(self, scene_id: str) -> None:
-        """Delete a scene from storage, with robust protection against data loss."""
-        _LOGGER.debug(f"[Storage] Attempting to delete scene: {scene_id}")
+        _LOGGER.info(f"[SceneStorage] async_delete_scene called with scene_id={scene_id}")
         async with self._lock:
-            data = await self.store.async_load()
-            disk_scenes = (data or {}).get("scenes", {})
-            if not disk_scenes and self._last_saved_state:
-                _LOGGER.warning("[Storage] Disk scenes empty but _last_saved_state is not. Restoring from backup.")
-                disk_scenes = dict(self._last_saved_state)
-            self.scenes = dict(disk_scenes)
-            if scene_id in self.scenes:
-                _LOGGER.debug(
-                    f"[Storage] Found scene {scene_id} in storage. Current scenes before delete: {json.dumps(self.scenes)}"
-                )
-                del self.scenes[scene_id]
-                # Defensive: do not allow save if new state is much smaller than previous (except for delete)
-                if self._last_saved_state and len(self.scenes) < len(self._last_saved_state) - 1 and len(self._last_saved_state) > 1:
-                    _LOGGER.error(f"[Storage] Refusing to save: new scene count ({len(self.scenes)}) is much less than previous ({len(self._last_saved_state)}). Aborting to prevent data loss.")
-                    raise HomeAssistantError("Refusing to overwrite scenes: possible data loss detected.")
-                await self.store.async_save({"scenes": self.scenes})
-                self._last_saved_state = dict(self.scenes)
-                _LOGGER.info(
-                    f"[Storage] Scene '{scene_id}' deleted and saved to storage. "
-                )
-            else:
-                _LOGGER.warning(
-                    f"[Storage] Attempted to delete non-existent scene: '{scene_id}'"
-                )
-                raise HomeAssistantError(f"Scene '{scene_id}' not found for deletion.")
+            data = await self.store.async_load() or {}
+            disk = data.get("scenes", {}) or {}
+            self.scenes = disk
+            if scene_id not in self.scenes:
+                _LOGGER.error(f"[SceneStorage] Scene '{scene_id}' not found for deletion.")
+                raise HomeAssistantError(f"Scene '{scene_id}' not found.")
+            del self.scenes[scene_id]
+            if len(self.scenes) < len(self._last_saved_state)-1:
+                _LOGGER.error(f"[SceneStorage] Aborting delete; data loss risk. Scene count after delete: {len(self.scenes)}")
+                raise HomeAssistantError("Aborting delete; data loss risk.")
+            await self.store.async_save({"scenes": self.scenes})
+            self._last_saved_state = dict(self.scenes)
+            _LOGGER.info(f"[SceneStorage] Scene '{scene_id}' deleted.")
 
     async def async_overwrite_scenes(self, scenes: list) -> None:
-        """Overwrite all scenes in storage."""
+        _LOGGER.info(f"[SceneStorage] async_overwrite_scenes called with scenes={scenes}")
         async with self._lock:
-            self.scenes = {
-                f"savant_{slugify(scene['name'])}": scene for scene in scenes
-            }
+            self.scenes = {}
+            for s in scenes:
+                bid = s.get("scene_id") or s.get("id")
+                name = s.get("name","")
+                states = s.get("relay_states",{}) or {}
+                _, final_name, final_id = self._get_normalized_scene_parts(name)
+                sid = bid if bid and bid.startswith("savant_") else final_id
+                self.scenes[sid] = {"id": sid, "name": final_name, "relay_states": states}
             await self.async_save()
+            _LOGGER.info(f"[SceneStorage] Scenes overwritten. New scene count: {len(self.scenes)}")
 
 
 class SavantSceneManager:
