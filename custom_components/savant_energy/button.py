@@ -30,33 +30,25 @@ class SavantSceneButton(ButtonEntity):
     Button entity to execute a Savant scene.
     When pressed, always uses the latest scene data from storage and ensures all DMX addresses are included.
     """
-    _attr_has_entity_name = True  # This means the entity name is derived from the device name + button name
+    _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, hass, scene_manager, scene_id, scene_name_from_storage):
+    def __init__(self, hass, scene_manager, scene_id, stored_scene_name):
         self._hass = hass
         self._scene_manager = scene_manager
         self._scene_id = scene_id # This is the normalized ID, e.g., savant_my_scene_scene
         
-        # The scene_name_from_storage is already normalized, e.g., "Savant My Scene Scene"
-        # This will be used as the Device Name for this button entity.
-        self._device_name = scene_name_from_storage 
-
-        # For ButtonEntity, if _attr_has_entity_name = True, the entity's friendly name
-        # is typically <Device Name> <Name of ButtonEntity>.
-        # We want the button's friendly name to be just the scene name itself.
-        # So, we set _attr_name to an empty string or a non-displayable character if needed,
-        # or rely on how HA constructs it if device name alone is sufficient.
-        # Let's test with _attr_name = None first, or an empty string.
-        # If _attr_name is set, it appends to device name. We want device name to be the full name.
-        self._attr_name = None # This should make the entity name just the device name.
-
-        self._attr_unique_id = f"button.{scene_id}" # Ensure it's unique, e.g., button.savant_my_scene_scene
+        # stored_scene_name is the base name, e.g., "My Scene"
+        # We need to construct the full display name for the button/device
+        _base_label, self._full_display_name, _final_id = scene_manager.storage._get_normalized_scene_parts(stored_scene_name)
+        
+        self._attr_name = None # Results in entity friendly name being the device name
+        self._attr_unique_id = f"button.{scene_id}" 
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, scene_id)}, # Use the scene_id for device identifier
-            name=self._device_name, # Device name is "Savant My Scene Scene"
+            identifiers={(DOMAIN, scene_id)}, 
+            name=self._full_display_name, # Device name is "Savant My Scene Scene"
             manufacturer=MANUFACTURER,
-            model="Savant Scene Control Button" # Optional: Add a model for clarity
+            model="Savant Scene Control Button"
         )
 
     @property
@@ -167,20 +159,22 @@ class SavantSceneButtonManager:
         current_scene_data = self.scene_manager.storage.scenes
         current_scene_ids = set(current_scene_data.keys())
 
-        # Add new buttons for any scenes that don't have one yet
         new_ids = current_scene_ids - self._last_scene_ids
         buttons_to_add = []
         for scene_id in new_ids:
-            if scene_id in self.buttons: # Should not happen if logic is correct
+            if scene_id in self.buttons:
                 _LOGGER.warning(f"Scene button for {scene_id} already exists in manager, skipping add.")
                 continue
             scene_info = current_scene_data.get(scene_id)
+            # scene_info["name"] is now the base name, e.g., "My Scene"
             if scene_info and "name" in scene_info:
-                # scene_info["name"] is already normalized, e.g., "Savant My Scene Scene"
-                button = SavantSceneButton(self.hass, self.scene_manager, scene_id, scene_info["name"])
+                stored_base_name = scene_info["name"]
+                # The SavantSceneButton constructor will use _get_normalized_scene_parts
+                # to generate the full display name for the button entity itself.
+                button = SavantSceneButton(self.hass, self.scene_manager, scene_id, stored_base_name)
                 self.buttons[scene_id] = button
                 buttons_to_add.append(button)
-                _LOGGER.info(f"Creating button for new scene: {scene_info['name']} (ID: {scene_id})")
+                _LOGGER.info(f"Creating button for new scene (Stored Name: {stored_base_name}, ID: {scene_id})")
             else:
                 _LOGGER.warning(f"Scene ID {scene_id} found but data or name is missing, cannot create button.")
         
