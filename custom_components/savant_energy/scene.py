@@ -312,9 +312,15 @@ class SavantSceneStorage:
         Returns: (base_label, final_scene_name, final_scene_id)
         """
         # Remove any existing Savant prefix/suffix before reapplying
-        base_label = re.sub(r'^[Ss]avant\s+', '', raw_name, flags=re.IGNORECASE)
-        base_label = re.sub(r'\s+[Ss]cene$', '', base_label, flags=re.IGNORECASE).strip()
-        final_name = f"Savant {base_label} Scene"
+        base_label = re.sub(r'^[Ss]avant\\s+', '', raw_name, flags=re.IGNORECASE)
+        base_label = re.sub(r'\\s+[Ss]cene$', '', base_label, flags=re.IGNORECASE).strip()
+
+        # Title case the base_label for the display name part
+        display_base_label = base_label.title()
+
+        final_name = f"Savant {display_base_label} Scene"
+        # Slug should be based on the original (non-title-cased) base_label for consistency if IDs are sensitive to case changes.
+        # However, slugify typically lowercases, so it might not matter. Using original base_label is safer.
         slug = slugify(base_label)
         final_id = f"savant_{slug}_scene"
         return base_label, final_name, final_id

@@ -6,6 +6,7 @@ Provides diagnostic and control buttons for the integration.
 import logging
 from typing import Final
 from datetime import timedelta
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry  # type: ignore
 
 from homeassistant.components.button import ButtonEntity, ButtonDeviceClass  # type: ignore
 from homeassistant.config_entries import ConfigEntry  # type: ignore
@@ -162,24 +163,15 @@ class SavantSceneButtonManager:
         new_ids = current_scene_ids - self._last_scene_ids
         buttons_to_add = []
         for scene_id in new_ids:
-            if scene_id in self.buttons:
-                _LOGGER.warning(f"Scene button for {scene_id} already exists in manager, skipping add.")
-                continue
-            scene_info = current_scene_data.get(scene_id)
-            # scene_info["name"] is now the base name, e.g., "My Scene"
-            if scene_info and "name" in scene_info:
-                stored_base_name = scene_info["name"]
-                # The SavantSceneButton constructor will use _get_normalized_scene_parts
-                # to generate the full display name for the button entity itself.
-                button = SavantSceneButton(self.hass, self.scene_manager, scene_id, stored_base_name)
-                self.buttons[scene_id] = button
-                buttons_to_add.append(button)
-                _LOGGER.info(f"Creating button for new scene (Stored Name: {stored_base_name}, ID: {scene_id})")
-            else:
-                _LOGGER.warning(f"Scene ID {scene_id} found but data or name is missing, cannot create button.")
+            scene_data = current_scene_data[scene_id]
+            # Use the stored base name to create the button
+            button = SavantSceneButton(self.hass, self.scene_manager, scene_id, scene_data["name"])
+            self.buttons[scene_id] = button
+            buttons_to_add.append(button)
         
         if buttons_to_add:
             self.async_add_entities(buttons_to_add)
+            _LOGGER.info(f"Added {len(buttons_to_add)} new scene buttons.")
 
         # Remove deleted buttons
         removed_ids = self._last_scene_ids - current_scene_ids
@@ -187,27 +179,17 @@ class SavantSceneButtonManager:
         for scene_id in removed_ids:
             if scene_id in self.buttons:
                 button_entity = self.buttons.pop(scene_id)
-                # HA should handle removal from the entity registry if the entity signals it's unavailable
-                # or if we explicitly remove it. For buttons, it might be cleaner to remove them.
-                # This requires the button entity to be registered with HA first.
-                # We will rely on HA to remove entities that are no longer added by the platform.
-                # However, we need to tell HA to remove them if they were previously added.
-                # This is typically handled by returning them from an async_remove_entity method if the platform supports it,
-                # or by ensuring they are not added again and HA cleans them up.
-                # For now, just removing from our internal tracking. HA should remove if not re-added.
-                _LOGGER.info(f"Removing button for deleted scene ID: {scene_id}")
-                # To explicitly remove, we might need to call entity_registry.async_remove_entity
-                # For now, let's assume HA handles it if we don't add them again.
-                # If explicit removal is needed, this part needs more work with entity_registry.
-                # Let's try to remove them from hass.entities
-                try:
-                    await button_entity.async_remove()
-                    _LOGGER.debug(f"Successfully called async_remove for button {scene_id}")
-                except Exception as e:
-                    _LOGGER.error(f"Error calling async_remove for button {scene_id}: {e}")
-
+                # Mark the entity for removal from Home Assistant
+                await button_entity.async_remove()
+                # Also remove from the entity registry to prevent orphaned entities
+                entity_registry = async_get_entity_registry(self.hass)
+                entity_id = button_entity.entity_id
+                if entity_registry.async_is_registered(entity_id):
+                    entity_registry.async_remove(entity_id)
+                    _LOGGER.info(f"Entity {entity_id} removed from entity registry.")
+                _LOGGER.info(f"Scene button for {scene_id} marked for removal.")
             else:
-                _LOGGER.warning(f"Attempted to remove button for non-tracked scene ID: {scene_id}")
+                _LOGGER.debug(f"Attempted to remove button for scene_id {scene_id}, but it was not found in self.buttons.")
 
         self._last_scene_ids = current_scene_ids
 
@@ -215,9 +197,11 @@ class SavantSceneButtonManager:
         if self._unsub_refresh:
             self._unsub_refresh()
             self._unsub_refresh = None
+        
         for button in self.buttons.values():
-            await button.async_remove()
+            await button.async_remove() # Ensure all managed buttons are removed on unload
         self.buttons.clear()
+        _LOGGER.info("All scene buttons have been marked for removal during unload.")
 
 
 class SavantAllLoadsButton(ButtonEntity):
