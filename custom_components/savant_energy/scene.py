@@ -371,18 +371,17 @@ class SavantSceneStorage:
                         f"A scene with the display name '{final_name}' already exists (derived from stored name '{existing_base_label}', ID: {existing_scene_id})."
                     )
             
-            relay_states = relay_states or {}
-            if not relay_states:
-                all_entity_ids = self.hass.states.async_entity_ids("switch")
-                populated_relay_states = {}
-                for entity_id_str in all_entity_ids:
-                    state = self.hass.states.get(entity_id_str)
-                    if not state or state.state in ("unknown", "unavailable"):
-                        continue
-                    friendly_name_attr = state.attributes.get("friendly_name", "")
-                    if "breaker" in entity_id_str.lower() or "breaker" in friendly_name_attr.lower():
-                        populated_relay_states[entity_id_str] = True
-                relay_states = populated_relay_states
+            # Always populate with all breakers set to ON, ignoring input relay_states for new scenes.
+            all_entity_ids = self.hass.states.async_entity_ids("switch")
+            populated_relay_states = {}
+            for entity_id_str in all_entity_ids:
+                state = self.hass.states.get(entity_id_str)
+                if not state or state.state in ("unknown", "unavailable"):
+                    continue
+                friendly_name_attr = state.attributes.get("friendly_name", "")
+                if "breaker" in entity_id_str.lower() or "breaker" in friendly_name_attr.lower():
+                    populated_relay_states[entity_id_str] = True
+            relay_states = populated_relay_states # Use the populated states
 
             # Store the base_label as the scene's "name"
             self.scenes[final_id] = {"name": base_label, "relay_states": relay_states}
