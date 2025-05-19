@@ -30,19 +30,33 @@ class SavantSceneButton(ButtonEntity):
     Button entity to execute a Savant scene.
     When pressed, always uses the latest scene data from storage and ensures all DMX addresses are included.
     """
-    _attr_has_entity_name = True
+    _attr_has_entity_name = True  # This means the entity name is derived from the device name + button name
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, hass, scene_manager, scene_id, scene_name):
+    def __init__(self, hass, scene_manager, scene_id, scene_name_from_storage):
         self._hass = hass
         self._scene_manager = scene_manager
-        self._scene_id = scene_id
-        self._attr_name = scene_name
-        self._attr_unique_id = scene_id
+        self._scene_id = scene_id # This is the normalized ID, e.g., savant_my_scene_scene
+        
+        # The scene_name_from_storage is already normalized, e.g., "Savant My Scene Scene"
+        # This will be used as the Device Name for this button entity.
+        self._device_name = scene_name_from_storage 
+
+        # For ButtonEntity, if _attr_has_entity_name = True, the entity's friendly name
+        # is typically <Device Name> <Name of ButtonEntity>.
+        # We want the button's friendly name to be just the scene name itself.
+        # So, we set _attr_name to an empty string or a non-displayable character if needed,
+        # or rely on how HA constructs it if device name alone is sufficient.
+        # Let's test with _attr_name = None first, or an empty string.
+        # If _attr_name is set, it appends to device name. We want device name to be the full name.
+        self._attr_name = None # This should make the entity name just the device name.
+
+        self._attr_unique_id = f"button.{scene_id}" # Ensure it's unique, e.g., button.savant_my_scene_scene
         self._attr_device_info = DeviceInfo(
-            identifiers = {(DOMAIN, scene_id)},
-            name = scene_name,
-            manufacturer = MANUFACTURER,
+            identifiers={(DOMAIN, scene_id)}, # Use the scene_id for device identifier
+            name=self._device_name, # Device name is "Savant My Scene Scene"
+            manufacturer=MANUFACTURER,
+            model="Savant Scene Control Button" # Optional: Add a model for clarity
         )
 
     @property
@@ -149,25 +163,59 @@ class SavantSceneButtonManager:
         await self._refresh_buttons()
 
     async def _refresh_buttons(self):
-        await self.scene_manager.storage.async_load()
-        scene_ids = set(self.scene_manager.storage.scenes.keys())
+        await self.scene_manager.storage.async_load() # Ensure latest scenes are loaded
+        current_scene_data = self.scene_manager.storage.scenes
+        current_scene_ids = set(current_scene_data.keys())
+
         # Add new buttons for any scenes that don't have one yet
-        new_ids = scene_ids - self._last_scene_ids
+        new_ids = current_scene_ids - self._last_scene_ids
+        buttons_to_add = []
         for scene_id in new_ids:
-            scene_data = self.scene_manager.storage.scenes[scene_id]
-            if scene_id not in self.buttons:
-                button = SavantSceneButton(self.hass, self.scene_manager, scene_id, scene_data["name"])
-                self.async_add_entities([button])
+            if scene_id in self.buttons: # Should not happen if logic is correct
+                _LOGGER.warning(f"Scene button for {scene_id} already exists in manager, skipping add.")
+                continue
+            scene_info = current_scene_data.get(scene_id)
+            if scene_info and "name" in scene_info:
+                # scene_info["name"] is already normalized, e.g., "Savant My Scene Scene"
+                button = SavantSceneButton(self.hass, self.scene_manager, scene_id, scene_info["name"])
                 self.buttons[scene_id] = button
-                _LOGGER.info(f"Created Savant Scene Button for scene: {scene_data['name']} ({scene_id})")
+                buttons_to_add.append(button)
+                _LOGGER.info(f"Creating button for new scene: {scene_info['name']} (ID: {scene_id})")
+            else:
+                _LOGGER.warning(f"Scene ID {scene_id} found but data or name is missing, cannot create button.")
+        
+        if buttons_to_add:
+            self.async_add_entities(buttons_to_add)
+
         # Remove deleted buttons
-        removed_ids = self._last_scene_ids - scene_ids
+        removed_ids = self._last_scene_ids - current_scene_ids
+        buttons_to_remove_entities = []
         for scene_id in removed_ids:
-            button = self.buttons.pop(scene_id, None)
-            if button:
-                await button.async_remove()
-                _LOGGER.info(f"Removed Savant Scene Button for deleted scene: {scene_id}")
-        self._last_scene_ids = scene_ids
+            if scene_id in self.buttons:
+                button_entity = self.buttons.pop(scene_id)
+                # HA should handle removal from the entity registry if the entity signals it's unavailable
+                # or if we explicitly remove it. For buttons, it might be cleaner to remove them.
+                # This requires the button entity to be registered with HA first.
+                # We will rely on HA to remove entities that are no longer added by the platform.
+                # However, we need to tell HA to remove them if they were previously added.
+                # This is typically handled by returning them from an async_remove_entity method if the platform supports it,
+                # or by ensuring they are not added again and HA cleans them up.
+                # For now, just removing from our internal tracking. HA should remove if not re-added.
+                _LOGGER.info(f"Removing button for deleted scene ID: {scene_id}")
+                # To explicitly remove, we might need to call entity_registry.async_remove_entity
+                # For now, let's assume HA handles it if we don't add them again.
+                # If explicit removal is needed, this part needs more work with entity_registry.
+                # Let's try to remove them from hass.entities
+                try:
+                    await button_entity.async_remove()
+                    _LOGGER.debug(f"Successfully called async_remove for button {scene_id}")
+                except Exception as e:
+                    _LOGGER.error(f"Error calling async_remove for button {scene_id}: {e}")
+
+            else:
+                _LOGGER.warning(f"Attempted to remove button for non-tracked scene ID: {scene_id}")
+
+        self._last_scene_ids = current_scene_ids
 
     async def async_unload(self):
         if self._unsub_refresh:

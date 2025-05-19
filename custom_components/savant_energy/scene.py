@@ -353,52 +353,83 @@ class SavantSceneStorage:
     async def async_create_scene(self, name: str, relay_states: Dict[str, bool]) -> str:
         """Create a new scene and save it to storage."""
         async with self._lock:
-            scene_id = f"savant_{slugify(name)}"
+            raw_name = name  # Keep original input for clarity if needed
+            _base_label, final_name, final_id = self._get_normalized_scene_parts(raw_name)
+
             # Always load latest scenes from disk
             data = await self.store.async_load()
             self.scenes = (data or {}).get("scenes", {})
-            if scene_id in self.scenes:
-                raise HomeAssistantError(f"Scene {name} already exists")
-            for existing_scene in self.scenes.values():
-                if existing_scene["name"].strip().lower() == name.strip().lower():
-                    raise HomeAssistantError(f"Scene {name} already exists")
+
+            if final_id in self.scenes:
+                raise HomeAssistantError(f"A scene derived from '{raw_name}' (ID: {final_id}) already exists.")
+            # Check for name conflicts based on the final, normalized name
+            for existing_scene_id, existing_scene_data in self.scenes.items():
+                if existing_scene_data.get("name", "").strip().lower() == final_name.strip().lower():
+                    raise HomeAssistantError(
+                        f"A scene with the name '{final_name}' already exists (ID: {existing_scene_id})."
+                    )
+
             relay_states = relay_states or {}
-            all_entity_ids = self.hass.states.async_entity_ids("switch")
-            for entity_id_str in all_entity_ids:
-                state = self.hass.states.get(entity_id_str)
-                if not state or state.state in ("unknown", "unavailable"):
-                    continue
-                friendly_name = state.attributes.get("friendly_name", "")
-                if "breaker" in entity_id_str.lower() or "breaker" in friendly_name.lower():
-                    relay_states[entity_id_str] = True
-            self.scenes[scene_id] = {"name": name, "relay_states": relay_states or {}}
+            # The logic for populating relay_states based on all_entity_ids seems to default all breakers to True.
+            # This might need review based on desired behavior, but is outside the scope of naming.
+            # For now, we'll keep it if relay_states is empty, but prioritize provided relay_states.
+            if not relay_states:
+                all_entity_ids = self.hass.states.async_entity_ids("switch")
+                populated_relay_states = {}
+                for entity_id_str in all_entity_ids:
+                    state = self.hass.states.get(entity_id_str)
+                    if not state or state.state in ("unknown", "unavailable"):
+                        continue
+                    friendly_name_attr = state.attributes.get("friendly_name", "")
+                    if "breaker" in entity_id_str.lower() or "breaker" in friendly_name_attr.lower():
+                        populated_relay_states[entity_id_str] = True # Default to True if auto-populating
+                relay_states = populated_relay_states
+
+            self.scenes[final_id] = {"name": final_name, "relay_states": relay_states}
             await self.store.async_save({"scenes": self.scenes})
             self._last_saved_state = dict(self.scenes)
-            # Only keep this info log for successful creation
-            _LOGGER.info(f"Scene '{name}' (ID: {scene_id}) created and saved to storage.")
-            return scene_id
+            _LOGGER.info(f"Scene '{final_name}' (ID: {final_id}) created and saved to storage.")
+            return final_id
 
     async def async_update_scene(self, scene_id: str, name: Optional[str] = None, relay_states: Optional[Dict[str, bool]] = None) -> None:
         """Update an existing scene in the JSON file."""
         async with self._lock:
             data = await self.store.async_load()
             self.scenes = (data or {}).get("scenes", {})
+
             if scene_id not in self.scenes:
-                raise HomeAssistantError(f"Scene {scene_id} not found")
+                raise HomeAssistantError(f"Scene with ID '{scene_id}' not found.")
+
             scene = self.scenes[scene_id]
-            old_name = scene["name"]
-            if name is not None and name != old_name:
-                for existing_id, existing_scene_data in self.scenes.items():
-                    if existing_id != scene_id and existing_scene_data["name"].strip().lower() == name.strip().lower():
-                        raise HomeAssistantError(f"A scene with the name '{name}' already exists.")
-                scene["name"] = name
-                _LOGGER.debug(f"[Storage] Scene '{scene_id}' name changed from '{old_name}' to '{name}'.")
+            original_scene_name = scene.get("name", scene_id) # Fallback to ID if name is missing
+
+            if name is not None:
+                raw_update_name = name
+                _update_base_label, new_final_name, _update_final_id = self._get_normalized_scene_parts(raw_update_name)
+
+                # Note: We are not changing the scene_id on update.
+                # If _update_final_id is different from scene_id, it means the base name changed significantly.
+                # The scene_id (unique_id for HA entity) remains constant.
+
+                if new_final_name != original_scene_name:
+                    # Check for conflict with other scenes
+                    for existing_id, existing_scene_data in self.scenes.items():
+                        if existing_id != scene_id and existing_scene_data.get("name", "").strip().lower() == new_final_name.strip().lower():
+                            raise HomeAssistantError(
+                                f"Cannot update scene '{original_scene_name}': another scene with the name '{new_final_name}' already exists (ID: {existing_id})."
+                            )
+                    scene["name"] = new_final_name
+                    _LOGGER.debug(f"[Storage] Scene '{scene_id}' name changed from '{original_scene_name}' to '{new_final_name}'.")
+                else:
+                    _LOGGER.debug(f"[Storage] Scene '{scene_id}' name update requested with '{raw_update_name}', but normalized name '{new_final_name}' is the same as current. No change made to name.")
+
             if relay_states is not None:
                 scene["relay_states"] = relay_states
-                _LOGGER.debug(f"[Storage] Scene '{scene_id}' relay_states updated to: {relay_states}")
+                _LOGGER.debug(f"[Storage] Scene '{scene_id}' relay_states updated.")
+
             await self.store.async_save({"scenes": self.scenes})
             self._last_saved_state = dict(self.scenes)
-            _LOGGER.info(f"[Storage] Scene '{scene_id}' updated and saved to storage. Current scenes: {json.dumps(self.scenes)}")
+            _LOGGER.info(f"[Storage] Scene '{scene_id}' (Name: '{scene.get('name')}') updated and saved to storage.")
 
     async def async_delete_scene(self, scene_id: str) -> None:
         """Delete a scene from storage."""
@@ -420,15 +451,29 @@ class SavantSceneStorage:
 
         async with self._lock:
             self.scenes = {}
-            for s in scenes:
-                bid = s.get("scene_id") or s.get("id")
-                name = s.get("name","")
-                states = s.get("relay_states",{}) or {}
-                _, final_name, final_id = self._get_normalized_scene_parts(name)
-                sid = bid if bid and bid.startswith("savant_") else final_id
-                self.scenes[sid] = {"id": sid, "name": final_name, "relay_states": states}
-            await self.async_save()
+            for s_data in scenes:
+                raw_name_from_input = s_data.get("name", "")
+                relay_states_from_input = s_data.get("relay_states", {}) or {}
 
+                # Use _get_normalized_scene_parts to determine the canonical ID and name
+                _base_label, final_name, final_id = self._get_normalized_scene_parts(raw_name_from_input)
+                
+                # The scene_id from the input (s_data.get("scene_id") or s_data.get("id"))
+                # is disregarded in favor of the normalized ID to ensure consistency.
+                # If migration of old IDs is needed, that would be a separate, more complex step.
+
+                if final_id in self.scenes:
+                    _LOGGER.warning(f"Duplicate scene ID '{final_id}' (from raw name '{raw_name_from_input}') encountered during overwrite. Skipping subsequent entry.")
+                    continue
+
+                self.scenes[final_id] = {
+                    "id": final_id,  # Store the normalized ID also in the 'id' field
+                    "name": final_name,
+                    "relay_states": relay_states_from_input
+                }
+            _LOGGER.info(f"Overwriting scenes. {len(self.scenes)} scenes prepared.")
+            await self.async_save()
+            _LOGGER.info("Scenes successfully overwritten and saved.")
 
 
 class SavantSceneManager:
