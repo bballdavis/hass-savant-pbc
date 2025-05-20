@@ -93,3 +93,23 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def icon(self):
         return "mdi:toggle-switch-outline"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """
+        Return dynamic DeviceInfo with the current device name.
+        """
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        device_name = self._device["name"]
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    device_name = device["name"]
+                    break
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self._device["uid"]))},
+            name=device_name,
+            serial_number=self._dmx_uid,
+            manufacturer=MANUFACTURER,
+            model=get_device_model(self._device.get("capacity", 0)),
+        )
