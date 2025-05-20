@@ -48,13 +48,13 @@ class SavantSceneButton(ButtonEntity):
             scene_manager.storage._get_normalized_scene_parts(stored_scene_name)
         )
 
-        self._attr_name = None  # Results in entity friendly name being the device name
+        self._attr_name = self._full_display_name # Use the full display name for the button's friendly name
         self._attr_unique_id = f"button.{scene_id}"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, scene_id)},
-            name=self._full_display_name,  # Device name is "Savant My Scene Scene"
+            identifiers={(DOMAIN, "savant_energy_scenes_device")}, # Common identifier for all scene buttons
+            name="Savant Energy Scenes",  # Common device name
             manufacturer=MANUFACTURER,
-            model="Savant Scene Control Button",
+            model="Savant Scene Controls", # Common model name
         )
 
     @property
