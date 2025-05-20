@@ -19,7 +19,6 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     """
     Set up Savant Energy binary sensor entities for relay status.
     """
-    _LOGGER.info("Starting async_setup_entry for savant_energy binary_sensor platform.") # Added log
     coordinator = hass.data[DOMAIN][config_entry.entry_id]
     await coordinator.async_config_entry_first_refresh()
     snapshot_data = coordinator.data.get("snapshot_data", {}) if coordinator.data else {}
@@ -89,54 +88,28 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
         """
         Return True if the entity is available (device present in snapshot).
         """
-        entity_id_for_log = self._attr_unique_id or f"UID_{self._device_uid}"
-        _LOGGER.debug(f"[{entity_id_for_log}] Checking availability for device UID: {self._device_uid}")
 
         if not self.coordinator.last_update_success:
-            _LOGGER.debug(f"[{entity_id_for_log}] Coordinator last update was not successful. Available: False")
             return False
 
         if not self.coordinator.data:
-            _LOGGER.debug(f"[{entity_id_for_log}] Coordinator data is None. Available: False")
             return False
             
         snapshot_data = self.coordinator.data.get("snapshot_data", {})
         if not snapshot_data:
-            _LOGGER.debug(f"[{entity_id_for_log}] Snapshot data is empty. Available: False")
             return False
 
         if "presentDemands" not in snapshot_data or not isinstance(snapshot_data.get("presentDemands"), list):
-            _LOGGER.debug(f"[{entity_id_for_log}] 'presentDemands' is missing or not a list in snapshot_data. Available: False. Data: {snapshot_data.get('presentDemands')}")
             return False
         
         if not snapshot_data["presentDemands"]:
-            _LOGGER.debug(f"[{entity_id_for_log}] 'presentDemands' is empty. Available: False")
             return False
 
-        # To see the data being searched, you can uncomment the following line, but be cautious if the data is very large.
-        # _LOGGER.debug(f"[{entity_id_for_log}] Searching for UID '{self._device_uid}' in presentDemands: {snapshot_data['presentDemands']}")
-
-        for i, device_in_list in enumerate(snapshot_data["presentDemands"]):
-            current_device_uid = device_in_list.get("uid")
-            # Check if the current device in the list matches our target UID
-            if current_device_uid == self._device_uid:
-                _LOGGER.debug(f"[{entity_id_for_log}] Found matching UID '{self._device_uid}' in presentDemands at index {i}.")
-                # Now check if 'percentCommanded' is present for this specific device
+        for device_in_list in snapshot_data["presentDemands"]:
+            if device_in_list.get("uid") == self._device_uid:
                 if "percentCommanded" in device_in_list:
-                    _LOGGER.debug(f"[{entity_id_for_log}] 'percentCommanded' key IS PRESENT. Value: {device_in_list['percentCommanded']}. Entity available: True")
                     return True
-                else:
-                    # Device found, but 'percentCommanded' is missing.
-                    # According to the original logic, this specific entry doesn't make the entity available.
-                    # The loop would continue, but if this is the only entry for this UID, it will become unavailable.
-                    _LOGGER.debug(f"[{entity_id_for_log}] 'percentCommanded' key IS MISSING for device UID '{self._device_uid}'. This specific entry does not make it available.")
-                    # To strictly make it unavailable if the matched device is incomplete:
-                    # return False
-                    # However, to maintain original behavior (in case of multiple entries for same UID, though unlikely):
-                    # We continue, and if no *complete* entry is found, it will fall through to return False.
-                    # For unique UIDs, this means if the key is missing, it will eventually be False.
-
-        _LOGGER.debug(f"[{entity_id_for_log}] Device UID '{self._device_uid}' not found in presentDemands with 'percentCommanded' key, or 'presentDemands' list did not yield a match. Entity available: False")
+        
         return False
 
     @property
