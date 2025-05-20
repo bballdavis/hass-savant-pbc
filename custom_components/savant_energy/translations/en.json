@@ -1,0 +1,32 @@
+{
+  "options": {
+    "step": {
+      "init": {
+        "title": "Savant Energy Options",
+        "data": {
+          "address": "IP Address",
+          "port": "Port",
+          "ola_port": "OLA Port",
+          "scan_interval": "Scan Interval",
+          "switch_cooldown": "Breaker Cooldown",
+          "dmx_testing_mode": "DMX Testing Mode",
+          "dmx_address_cache": "DMX Address Cache",
+          "disable_scene_builder": "Disable Scene Builder"
+        },
+        "description": "Field descriptions: \nIP Address (The address of your Savant controller), \nPort (Port for energy snapshot data, default: 2000), \nOLA Port (Port for DMX/OLA API, default: 9090), \nScan Interval (How often to poll for new data in seconds, default: 15), \nBreaker Cooldown (Minimum seconds between relay toggles, default: 30), \nDMX Testing Mode (Makes all DMX commands sent to console only for testing), \nDMX Address Cache (Enable DMX address caching for faster HASS loading), \nDisable Scene Builder (Removes loading of scene build card and backend)."
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Savant Energy Connection",
+        "data": {
+          "address": "IP Address",
+          "port": "Port"
+        },
+        "description": "Field descriptions: \nIP Address (The address of your Savant controller), \nPort (Port for energy snapshot data, default: 2000)."
+      }
+    }
+  }
+}

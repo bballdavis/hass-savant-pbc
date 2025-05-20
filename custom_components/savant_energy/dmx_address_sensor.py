@@ -13,7 +13,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
 from .models import get_device_model
-from .utils import async_get_dmx_address
+from .utils import async_get_dmx_address, slugify
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +47,23 @@ class DMXAddressSensor(CoordinatorEntity, SensorEntity):
             manufacturer=MANUFACTURER,
             model=get_device_model(device.get("capacity", 0)),
         )
+        self._slug_name = slugify(device["name"])
+
+    @property
+    def _current_device_name(self):
+        snapshot_data = self.coordinator.data.get("snapshot_data", {})
+        if snapshot_data and "presentDemands" in snapshot_data:
+            for device in snapshot_data["presentDemands"]:
+                if device["uid"] == self._device["uid"]:
+                    return device["name"]
+        return self._device["name"]
+
+    # Do NOT override entity_id. Home Assistant manages entity_id and expects it to be settable.
+    # Only the name property is dynamic, so the UI/friendly_name updates on device rename.
+    # unique_id remains stable and is used for entity tracking.
+    @property
+    def name(self):
+        return f"{self._current_device_name} DMX Address"
 
     @property
     def name(self) -> str:
@@ -85,10 +102,20 @@ class DMXAddressSensor(CoordinatorEntity, SensorEntity):
     async def async_added_to_hass(self):
         """
         Called when entity is added to Home Assistant.
-        Fetches the DMX address from the API.
+        Fetches the DMX address from the API, respecting the DMX Address Cache option.
         """
         await super().async_added_to_hass()
-        await self._fetch_dmx_address()
+        # Check config option for DMX address cache
+        cache_enabled = False
+        config_entry = getattr(self.coordinator, 'config_entry', None)
+        if config_entry:
+            cache_enabled = config_entry.options.get(
+                "dmx_address_cache",
+                config_entry.data.get("dmx_address_cache", False)
+            )
+        # Only fetch if not cached or cache is disabled
+        if not cache_enabled or self._dmx_address is None:
+            await self._fetch_dmx_address()
 
     async def _fetch_dmx_address(self):
         """

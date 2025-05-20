@@ -60,6 +60,18 @@ def calculate_dmx_uid(uid: str) -> str:
     return base_uid
 
 
+def slugify(name: str) -> str:
+    """
+    Sanitize a string to be used in an entity_id: lowercase, underscores, no special chars, no double underscores.
+    """
+    import re
+    name = name.lower().strip()
+    name = re.sub(r'[^a-z0-9]+', '_', name)
+    name = re.sub(r'_+', '_', name)
+    name = name.strip('_')
+    return name
+
+
 async def async_get_dmx_address(ip_address: str, ola_port: int, universe: int, dmx_uid: str) -> Optional[int]:
     """
     Get DMX address for a device using the RDM API.
@@ -88,18 +100,18 @@ async def async_get_dmx_address(ip_address: str, ola_port: int, universe: int, d
         return None
     
     url = f"http://{ip_address}:{ola_port}/json/rdm/uid_info?id={universe}&uid={dmx_uid}"
-    _LOGGER.debug(f"Fetching DMX address from: {url}")
+    #_LOGGER.debug(f"Fetching DMX address from: {url}")
     
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as response:
                 if response.status == 200:
                     text_response = await response.text()
-                    _LOGGER.debug(f"RDM raw text response: {text_response}")
+                    #_LOGGER.debug(f"RDM raw text response: {text_response}")
                     
                     try:
                         data = json.loads(text_response)
-                        _LOGGER.debug(f"RDM parsed JSON response: {data}")
+                        #_LOGGER.debug(f"RDM parsed JSON response: {data}")
                         
                         if "address" in data:
                             address = int(data["address"])

@@ -4,42 +4,33 @@ Creates binary sensors for relay status of each Savant device.
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import Optional, Final
-
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.core import callback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_OLA_PORT
+from .const import DOMAIN, MANUFACTURER
 from .models import get_device_model
-from .utils import calculate_dmx_uid, DMX_CACHE_SECONDS
+from .utils import calculate_dmx_uid
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """
-    Set up Savant Energy binary sensor entities.
-    Creates a binary sensor for each relay device found in presentDemands.
+    Set up Savant Energy binary sensor entities for relay status.
     """
     coordinator = hass.data[DOMAIN][config_entry.entry_id]
+    await coordinator.async_config_entry_first_refresh()
+    snapshot_data = coordinator.data.get("snapshot_data", {}) if coordinator.data else {}
     entities = []
-    snapshot_data = coordinator.data.get("snapshot_data", {})
-    if (
-        snapshot_data
-        and isinstance(snapshot_data, dict)
-        and "presentDemands" in snapshot_data
-    ):
+    if snapshot_data and "presentDemands" in snapshot_data:
         for device in snapshot_data["presentDemands"]:
-            uid = device["uid"]
-            dmx_uid = calculate_dmx_uid(uid)
-            entities.append(
-                EnergyDeviceBinarySensor(
-                    coordinator, device, f"SavantEnergy_{uid}_relay_status", dmx_uid
+            if "uid" in device and "percentCommanded" in device:
+                uid = device["uid"]
+                dmx_uid = calculate_dmx_uid(uid)
+                entities.append(
+                    EnergyDeviceBinarySensor(coordinator, device, f"SavantEnergy_{uid}_relay_status", dmx_uid)
                 )
-            )
     async_add_entities(entities)
 
 
@@ -49,43 +40,31 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
     Shows ON if the relay is commanded ON, OFF otherwise.
     """
     def __init__(self, coordinator, device, unique_id, dmx_uid):
-        """
-        Initialize the binary sensor.
-        Args:
-            coordinator: DataUpdateCoordinator
-            device: Device dict from presentDemands
-            unique_id: Unique entity ID
-            dmx_uid: DMX UID for device
-        """
         super().__init__(coordinator)
-        self._device = device
+        self._device_uid = device["uid"]
         self._attr_unique_id = unique_id
         self._dmx_uid = dmx_uid
-        self._device_uid = device["uid"]
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, str(device["uid"]))},
-            name=device["name"],
+            name=device.get("name", f"Savant Device {device['uid']}"),
             serial_number=dmx_uid,
             manufacturer=MANUFACTURER,
             model=get_device_model(device.get("capacity", 0)),
         )
+        self._attr_extra_state_attributes = {"uid": self._device_uid}
 
     @property
-    def name(self) -> str:
-        """
-        Return the dynamic friendly name for the entity, based on the current device name.
-        """
+    def name(self):
+        # Always use the latest name from coordinator data if available
         snapshot_data = self.coordinator.data.get("snapshot_data", {})
-        device_name = self._device["name"]
         if snapshot_data and "presentDemands" in snapshot_data:
             for device in snapshot_data["presentDemands"]:
-                if device["uid"] == self._device["uid"]:
-                    device_name = device["name"]
-                    break
-        return f"{device_name} Relay Status"
+                if device["uid"] == self._device_uid:
+                    return f"{device.get('name', self._device_uid)} Relay Status"
+        return f"Relay {self._device_uid} Status"
 
     @property
-    def is_on(self) -> Optional[bool]:
+    def is_on(self):
         """
         Return True if the relay is ON, based on percentCommanded == 100.
         """
@@ -93,28 +72,26 @@ class EnergyDeviceBinarySensor(CoordinatorEntity, BinarySensorEntity):
         if snapshot_data and "presentDemands" in snapshot_data:
             for device in snapshot_data["presentDemands"]:
                 if device["uid"] == self._device_uid:
-                    if "percentCommanded" in device:
-                        return device["percentCommanded"] == 100
+                    return device.get("percentCommanded") == 100
         return None
 
     @property
-    def available(self) -> bool:
+    def available(self):
         """
         Return True if the entity is available (device present in snapshot).
         """
+        if not self.coordinator.last_update_success:
+            return False
         snapshot_data = self.coordinator.data.get("snapshot_data", {})
         if not snapshot_data or "presentDemands" not in snapshot_data:
             return False
         for device in snapshot_data["presentDemands"]:
-            if device["uid"] == self._device_uid:
-                return "percentCommanded" in device
+            if device["uid"] == self._device_uid and "percentCommanded" in device:
+                return True
         return False
 
     @property
-    def icon(self) -> str:
-        """
-        Return the icon for the binary sensor.
-        """
+    def icon(self):
         return "mdi:toggle-switch-outline"
 
     @property
