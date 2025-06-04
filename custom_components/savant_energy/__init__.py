@@ -5,11 +5,8 @@ Provides Home Assistant integration for Savant relay and energy monitoring devic
 
 import logging
 from datetime import timedelta, datetime
-import shutil
 import os
 import traceback
-import json
-import uuid
 
 import homeassistant.helpers.config_validation as cv  # type: ignore
 import voluptuous as vol  # type: ignore
@@ -19,6 +16,7 @@ from homeassistant.core import HomeAssistant  # type: ignore
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator  # type: ignore
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry  # type: ignore
 from homeassistant.helpers.translation import async_get_translations  # type: ignore
+from homeassistant.components import frontend  # type: ignore
 
 from .const import (
     DOMAIN,
@@ -46,12 +44,8 @@ CONFIG_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
-# Lovelace card file information - follow HACS convention
+# Lovelace card file information
 LOVELACE_CARD_FILENAME = "savant-energy-scenes-card.js"
-HACS_COMMUNITY_DIR = "community"
-INTEGRATION_DIR_NAME = "savant_energy"
-HACS_CARD_DIR = os.path.join(HACS_COMMUNITY_DIR, INTEGRATION_DIR_NAME)
-LOVELACE_CARD_SOURCE = os.path.join(os.path.dirname(__file__), LOVELACE_CARD_FILENAME)
 
 
 class SavantEnergyCoordinator(DataUpdateCoordinator):
@@ -140,45 +134,38 @@ class SavantEnergyCoordinator(DataUpdateCoordinator):
 
 async def _async_register_frontend_resource(hass: HomeAssistant) -> None:
     """
-    Ensure the custom Lovelace card JS resource is registered for storage-mode dashboards.
+    Register the custom Lovelace card using Home Assistant's proper frontend system.
+    This is the correct way to register custom cards that other integrations use.
     """
-    resource_url = f"/hacsfiles/savant_energy/{LOVELACE_CARD_FILENAME}"
-    resource_type = "module"
-    _LOGGER.debug(
-        f"[LovReg] Starting frontend resource registration: url={resource_url}, type={resource_type}"
-    )
-
-    # Always patch .storage/lovelace_resources file (storage mode)
-    storage_path = hass.config.path(".storage", "lovelace_resources")
-    _LOGGER.debug(
-        f"[LovReg] Storage-mode fallback, patching storage file at: {storage_path}"
-    )
-
-    def _patch_storage() -> None:
-        if not os.path.exists(storage_path):
-            _LOGGER.debug(
-                f"[LovReg] Storage file not found, skipping patch: {storage_path}"
-            )
-            return
-        with open(storage_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        items = data.get("data", {}).get("items", [])
-        if any(item.get("url") == resource_url for item in items):
-            _LOGGER.debug(f"[LovReg] Resource already in storage, no patch needed.")
-            return
-        # Append new resource entry
-        items.append(
-            {"id": uuid.uuid4().hex, "url": resource_url, "type": resource_type}
-        )
-        data.setdefault("data", {})["items"] = items
-        with open(storage_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        _LOGGER.debug(f"[LovReg] Appended new resource entry to storage file.")
-
-    await hass.async_add_executor_job(_patch_storage)
-    _LOGGER.info(
-        f"Patched .storage/lovelace_resources to include resource: {resource_url}"
-    )
+    try:
+        # Register the static path for serving the card file
+        card_path = os.path.join(os.path.dirname(__file__), LOVELACE_CARD_FILENAME)
+        
+        # Use Home Assistant's HTTP component to register static path
+        # This serves the file at /local/savant_energy/savant-energy-scenes-card.js
+        local_path = f"/local/{DOMAIN}"
+        
+        # Try the new method first (HA 2024.7+)
+        try:
+            from homeassistant.components.http import StaticPathConfig
+            await hass.http.async_register_static_paths([
+                StaticPathConfig(local_path, os.path.dirname(__file__), True)
+            ])
+            resource_url = f"{local_path}/{LOVELACE_CARD_FILENAME}"
+            _LOGGER.info(f"Registered static path for card using new method: {resource_url}")
+        except (ImportError, AttributeError):
+            # Fallback to legacy method
+            hass.http.register_static_path(local_path, os.path.dirname(__file__), True)
+            resource_url = f"{local_path}/{LOVELACE_CARD_FILENAME}"
+            _LOGGER.info(f"Registered static path for card using legacy method: {resource_url}")
+        
+        # Register the JavaScript resource with Home Assistant's frontend
+        frontend.add_extra_js_url(hass, resource_url)
+        _LOGGER.info(f"Successfully registered Lovelace card resource: {resource_url}")
+        
+    except Exception as e:
+        _LOGGER.error(f"Failed to register frontend resource: {e}")
+        _LOGGER.exception("Full traceback:")
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -196,20 +183,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     disable_scene_builder = entry.options.get(
         "disable_scene_builder", entry.data.get("disable_scene_builder", False)
     )
-    if not disable_scene_builder:
-        # Copy Lovelace card JS into HACS www directory for hosting at /local/community/<integration>/
-        try:
-            www_root = hass.config.path("www")
-            hacs_www = os.path.join(www_root, "community", INTEGRATION_DIR_NAME)
-            # Ensure HACS community directory exists
-            if not os.path.exists(hacs_www):
-                await hass.async_add_executor_job(os.makedirs, hacs_www)
-            src_file = os.path.join(os.path.dirname(__file__), LOVELACE_CARD_FILENAME)
-            dest_file = os.path.join(hacs_www, LOVELACE_CARD_FILENAME)
-            await hass.async_add_executor_job(shutil.copyfile, src_file, dest_file)
-            _LOGGER.info(f"Copied Savant Energy Lovelace card to {dest_file}")
-        except Exception as copy_err:
-            _LOGGER.error(f"Error copying Lovelace card to www folder: {copy_err}")
 
     # Create coordinator and proceed with normal setup
     coordinator = SavantEnergyCoordinator(hass, entry)
@@ -233,9 +206,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, setup_platforms)
 
-    # Ensure frontend resource registration
+    # Register frontend resource after platforms are set up
     if not disable_scene_builder:
-        hass.async_create_task(_async_register_frontend_resource(hass))
+        await _async_register_frontend_resource(hass)
 
     entry.async_on_unload(entry.add_update_listener(async_update_listener))
 
